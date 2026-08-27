@@ -1,6 +1,6 @@
 # ============================================================
 # SERVICES INIT - Import all service modules
-# All constants are now properly defined and exported
+# All constants are defined directly here to avoid circular imports
 # ============================================================
 
 from . import netflix_trial
@@ -12,17 +12,16 @@ from . import hbomax
 from . import crunchyroll
 from . import jiohotstar
 
-# Export all constants for bot.py
-WAITING_EMAIL = netflix_trial.WAITING_EMAIL
-WAITING_NETFLIX_FILE = netflix_check.WAITING_NETFLIX_FILE
-WAITING_NETFLIX_TOKEN_FILE = netflix_token.WAITING_NETFLIX_TOKEN_FILE
-WAITING_SURFSHARK_CODE = surfshark.WAITING_SURFSHARK_CODE
-WAITING_SPOTIFY_CODE = spotify.WAITING_SPOTIFY_CODE
-WAITING_HBO_CODE = hbomax.WAITING_HBO_CODE
-WAITING_CRUNCHYROLL_CREDS = crunchyroll.WAITING_CRUNCHYROLL_CREDS
-WAITING_JIO_QR = jiohotstar.WAITING_JIO_QR
+# Define all constants here directly
+WAITING_EMAIL = 1
+WAITING_NETFLIX_FILE = 2
+WAITING_NETFLIX_TOKEN_FILE = 3
+WAITING_SURFSHARK_CODE = 4
+WAITING_SPOTIFY_CODE = 5
+WAITING_HBO_CODE = 6
+WAITING_CRUNCHYROLL_CREDS = 7
+WAITING_JIO_QR = 8
 
-# Also export the modules themselves
 __all__ = [
     'netflix_trial',
     'netflix_check',
@@ -35,6 +34,12 @@ __all__ = [
     'WAITING_EMAIL',
     'WAITING_NETFLIX_FILE',
     'WAITING_NETFLIX_TOKEN_FILE',
+    'WAITING_SURFSHARK_CODE',
+    'WAITING_SPOTIFY_CODE',
+    'WAITING_HBO_CODE',
+    'WAITING_CRUNCHYROLL_CREDS',
+    'WAITING_JIO_QR',
+]    'WAITING_NETFLIX_TOKEN_FILE',
     'WAITING_SURFSHARK_CODE',
     'WAITING_SPOTIFY_CODE',
     'WAITING_HBO_CODE',
