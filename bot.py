@@ -1,11 +1,17 @@
 # ============================================================
-# MASTER STREAMING ACTIVATOR BOT
+# MASTER BOT — Streaming + Cookie Checkers
 # Modular Architecture - All services loaded dynamically
 # ============================================================
 
 import os
+import re
 import glob
 import logging
+import zipfile
+import random
+import string
+from io import BytesIO
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, CallbackQueryHandler,
@@ -13,12 +19,11 @@ from telegram.ext import (
 )
 
 from config import TOKEN, OWNER_ID, E, COOKIES_FOLDER, WATERMARK
-from utils import pe, load_bot_stats, update_bot_stats
+from utils import pe, load_bot_stats, update_bot_stats, extract_cookie_dict
 import services
 
 
 # ─── Logging ──────────────────────────────────────────────────
-
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
@@ -27,7 +32,6 @@ log = logging.getLogger(__name__)
 
 
 # ─── Main Menu Keyboard ──────────────────────────────────────
-
 def main_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
@@ -40,7 +44,7 @@ def main_menu() -> InlineKeyboardMarkup:
                 f"{pe(E['check'])} Netflix Check",
                 callback_data="netflix_check",
                 icon_custom_emoji_id=E['check']
-            )
+            ),
         ],
         [
             InlineKeyboardButton(
@@ -52,7 +56,7 @@ def main_menu() -> InlineKeyboardMarkup:
                 f"{pe(E['globe'])} Surfshark",
                 callback_data="surfshark",
                 icon_custom_emoji_id=E['globe']
-            )
+            ),
         ],
         [
             InlineKeyboardButton(
@@ -64,7 +68,7 @@ def main_menu() -> InlineKeyboardMarkup:
                 f"{pe(E['gem'])} HBO Max TV",
                 callback_data="hbomax",
                 icon_custom_emoji_id=E['gem']
-            )
+            ),
         ],
         [
             InlineKeyboardButton(
@@ -76,7 +80,31 @@ def main_menu() -> InlineKeyboardMarkup:
                 f"{pe(E['chat'])} JioHotstar",
                 callback_data="jiohotstar",
                 icon_custom_emoji_id=E['chat']
-            )
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                f"{pe(E['chatgpt'])} ChatGPT",
+                callback_data="chatgpt",
+                icon_custom_emoji_id=E['chatgpt']
+            ),
+            InlineKeyboardButton(
+                f"{pe(E['cursor'])} Cursor",
+                callback_data="cursor",
+                icon_custom_emoji_id=E['cursor']
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                f"{pe(E['instagram'])} Instagram",
+                callback_data="instagram",
+                icon_custom_emoji_id=E['instagram']
+            ),
+            InlineKeyboardButton(
+                f"{pe(E['scan'])} Cookie Scan",
+                callback_data="scan",
+                icon_custom_emoji_id=E['scan']
+            ),
         ],
         [
             InlineKeyboardButton(
@@ -88,8 +116,8 @@ def main_menu() -> InlineKeyboardMarkup:
                 f"{pe(E['gift'])} Help",
                 callback_data="help",
                 icon_custom_emoji_id=E['gift']
-            )
-        ]
+            ),
+        ],
     ])
 
 
@@ -104,12 +132,11 @@ def back_button() -> InlineKeyboardMarkup:
 
 
 # ─── Command Handlers ────────────────────────────────────────
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     welcome = (
         f"{pe(E['gem'])} <b>Welcome, {user.first_name}!</b>\n\n"
-        f"{pe(E['rocket'])} <b>Master Streaming Activator Bot</b>\n"
+        f"{pe(E['rocket'])} <b>Master Streaming + Cookie Bot</b>\n"
         f"{pe(E['bolt'])} Select a service below to get started.\n\n"
         f"{pe(E['sparkle'])} {WATERMARK}"
     )
@@ -159,12 +186,6 @@ async def upload_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     )
 
     try:
-        import zipfile
-        from io import BytesIO
-        import random
-        import string
-        from utils import extract_cookie_dict
-
         file = await doc.get_file()
         content = await file.download_as_bytearray()
 
@@ -192,7 +213,7 @@ async def upload_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     with open(dest, 'w', encoding='utf-8') as f:
                         f.write(c)
                     added += 1
-                except:
+                except Exception:
                     continue
 
         await status_msg.edit_text(
@@ -221,13 +242,13 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         try:
             os.remove(f)
             deleted += 1
-        except:
+        except Exception:
             pass
 
     if os.path.exists("cookie_usage.json"):
         try:
             os.remove("cookie_usage.json")
-        except:
+        except Exception:
             pass
 
     await update.message.reply_html(
@@ -237,7 +258,6 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 # ─── Callback Router ─────────────────────────────────────────
-
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data = query.data
@@ -245,7 +265,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "main_menu":
         await query.answer()
         await query.edit_message_text(
-            f"{pe(E['gem'])} <b>Master Streaming Activator Bot</b>\n\n"
+            f"{pe(E['gem'])} <b>Master Streaming + Cookie Bot</b>\n\n"
             f"{pe(E['bolt'])} Select a service below.",
             reply_markup=main_menu(),
             parse_mode="HTML"
@@ -265,40 +285,42 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"{pe(E['hourglass'])} <b>Last Activity:</b> {stats.get('last', 'Never')}"
         )
         await query.edit_message_text(text, reply_markup=back_button(), parse_mode="HTML")
-        return
+        return ConversationHandler.END
 
     if data == "help":
         await query.answer()
         text = (
             f"{pe(E['gift'])} <b>Help & Commands</b>\n\n"
-            f"{pe(E['bolt'])} <b>How to use:</b>\n"
-            f"1. Select a service from the main menu\n"
-            f"2. Follow the instructions\n"
-            f"3. Get results instantly\n\n"
-            f"{pe(E['sparkle'])} <b>Services:</b>\n"
-            f"• Netflix Trial Offer\n"
-            f"• Netflix Account Checker\n"
-            f"• Netflix NF Token Generator\n"
-            f"• Surfshark Auto-Login\n"
-            f"• Spotify TV Activator\n"
-            f"• HBO Max TV Activator\n"
-            f"• Crunchyroll Checker\n"
-            f"• JioHotstar TV Activator\n\n"
-            f"{pe(E['user'])} <b>Admin:</b> @KindCoders"
+            f"{pe(E['rocket'])} <b>Streaming Services:</b>\n"
+            f"• Netflix Trial / Check / Token\n"
+            f"• Surfshark • Spotify TV • HBO Max\n"
+            f"• Crunchyroll • JioHotstar\n\n"
+            f"{pe(E['bolt'])} <b>Cookie Checkers:</b>\n"
+            f"• ChatGPT • Cursor\n"
+            f"• Instagram • Cookie Scanner\n\n"
+            f"{pe(E['star'])} <b>How to use:</b>\n"
+            f"1. Pick a service\n"
+            f"2. Upload your cookie file\n"
+            f"3. Get instant results\n\n"
+            f"{pe(E['user'])} <b>Admin:</b> @NotYoursNaruto"
         )
         await query.edit_message_text(text, reply_markup=back_button(), parse_mode="HTML")
-        return
+        return ConversationHandler.END
 
     # Route to service modules
     service_map = {
         "netflix_trial": services.netflix_trial.start_handler,
         "netflix_check": services.netflix_check.start_handler,
         "netflix_token": services.netflix_token.start_handler,
-        "surfshark": services.surfshark.start_handler,
-        "spotify": services.spotify.start_handler,
-        "hbomax": services.hbomax.start_handler,
-        "crunchyroll": services.crunchyroll.start_handler,
-        "jiohotstar": services.jiohotstar.start_handler,
+        "surfshark":     services.surfshark.start_handler,
+        "spotify":       services.spotify.start_handler,
+        "hbomax":        services.hbomax.start_handler,
+        "crunchyroll":   services.crunchyroll.start_handler,
+        "jiohotstar":    services.jiohotstar.start_handler,
+        "chatgpt":       services.chatgpt_service.cg_start_handler,
+        "cursor":        services.cursor_service.cursor_start_handler,
+        "instagram":     services.instagram_service.insta_start_handler,
+        "scan":          services.scan_cookies_service.scan_start_handler,
     }
 
     if data in service_map:
@@ -310,50 +332,62 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ─── Main Application ────────────────────────────────────────
-
 def main():
     print("\n" + "=" * 70)
-    print(f" {pe(E['gem'])} MASTER STREAMING ACTIVATOR BOT - MODULAR")
+    print(f" {pe(E['gem'])} MASTER BOT — STREAMING + COOKIE CHECKERS")
     print("=" * 70)
-    print(f" {pe(E['bolt'])} Services: Netflix · Surfshark · Spotify · HBO Max · Crunchyroll · JioHotstar")
+    print(f" {pe(E['bolt'])} 12 services loaded")
     print(f" {pe(E['star'])} Cookies Folder: {os.path.abspath(COOKIES_FOLDER)}")
     print(f" {pe(E['user'])} Owner ID: {OWNER_ID}")
     print("=" * 70 + "\n")
 
-    # Build app
     app = ApplicationBuilder().token(TOKEN).build()
 
-    # ─── Conversation Handler ──────────────────────────────────
-    # States from all services
+    # ─── Conversation Handler ────────────────────────────────
     states = {
-        services.netflix_trial.WAITING_EMAIL: [
+        services.WAITING_EMAIL: [
             MessageHandler(filters.TEXT & ~filters.COMMAND, services.netflix_trial.handle_email)
         ],
-        services.netflix_check.WAITING_NETFLIX_FILE: [
+        services.WAITING_NETFLIX_FILE: [
             MessageHandler(filters.Document.ALL, services.netflix_check.handle_file)
         ],
-        services.netflix_token.WAITING_NETFLIX_TOKEN_FILE: [
+        services.WAITING_NETFLIX_TOKEN_FILE: [
             MessageHandler(filters.Document.ALL, services.netflix_token.handle_file)
         ],
-        services.surfshark.WAITING_SURFSHARK_CODE: [
+        services.WAITING_SURFSHARK_CODE: [
             MessageHandler(filters.TEXT & ~filters.COMMAND, services.surfshark.handle_code)
         ],
-        services.spotify.WAITING_SPOTIFY_CODE: [
+        services.WAITING_SPOTIFY_CODE: [
             MessageHandler(filters.TEXT & ~filters.COMMAND, services.spotify.handle_code)
         ],
-        services.hbomax.WAITING_HBO_CODE: [
+        services.WAITING_HBO_CODE: [
             MessageHandler(filters.TEXT & ~filters.COMMAND, services.hbomax.handle_code)
         ],
-        services.crunchyroll.WAITING_CRUNCHYROLL_CREDS: [
+        services.WAITING_CRUNCHYROLL_CREDS: [
             MessageHandler(filters.TEXT & ~filters.COMMAND, services.crunchyroll.handle_creds)
         ],
-        services.jiohotstar.WAITING_JIO_QR: [
+        services.WAITING_JIO_QR: [
             MessageHandler(filters.PHOTO, services.jiohotstar.handle_qr)
+        ],
+        services.WAITING_CHATGPT_FILE: [
+            MessageHandler(filters.Document.ALL, services.chatgpt_service.cg_handle_file)
+        ],
+        services.WAITING_CURSOR_FILE: [
+            MessageHandler(filters.Document.ALL, services.cursor_service.cursor_handle_file)
+        ],
+        services.WAITING_INSTAGRAM_FILE: [
+            MessageHandler(filters.Document.ALL, services.instagram_service.insta_handle_file)
+        ],
+        services.WAITING_SCAN_FILE: [
+            MessageHandler(filters.Document.ALL, services.scan_cookies_service.scan_handle_file)
         ],
     }
 
     entry_points = [
-        CallbackQueryHandler(button_callback, pattern="^(netflix_trial|netflix_check|netflix_token|surfshark|spotify|hbomax|crunchyroll|jiohotstar)$"),
+        CallbackQueryHandler(
+            button_callback,
+            pattern="^(netflix_trial|netflix_check|netflix_token|surfshark|spotify|hbomax|crunchyroll|jiohotstar|chatgpt|cursor|instagram|scan)$"
+        ),
     ]
 
     fallbacks = [

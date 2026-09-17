@@ -1,6 +1,5 @@
 # ============================================================
-# CONFIGURATION - Master Streaming Bot
-# All tokens, IDs, emojis, and constants in one place
+# CONFIGURATION - Master Streaming Bot + Cookie Checkers
 # ============================================================
 
 import os
@@ -16,7 +15,6 @@ HITS_FOLDER = "hits"
 VAULT_FOLDER = "vault"
 OUTPUT_FOLDER = ".cache"
 
-# Create folders if they don't exist
 for folder in [COOKIES_FOLDER, HITS_FOLDER, VAULT_FOLDER, OUTPUT_FOLDER]:
     os.makedirs(folder, exist_ok=True)
 
@@ -60,6 +58,11 @@ E = {
     "next":      "4902715076873553054",
     "help_prev": "5246943906645428644",
     "help_next": "5462965076413656490",
+    # ─── New service emojis ───
+    "chatgpt":   "6134246530380472478",
+    "cursor":    "6273793612715138423",
+    "instagram": "5319160079465857105",
+    "scan":      "6012792650615230712",
 }
 
 R = {
@@ -79,14 +82,18 @@ R = {
 
 # ─── Service Names ──────────────────────────────────────────
 SERVICES = {
-    "netflix_trial": "Netflix Trial Offer",
-    "netflix_check": "Netflix Account Checker",
-    "netflix_token": "Netflix NF Token",
-    "surfshark": "Surfshark Auto-Login",
-    "spotify": "Spotify TV Activator",
-    "hbomax": "HBO Max TV Activator",
-    "crunchyroll": "Crunchyroll Checker",
-    "jiohotstar": "JioHotstar TV Activator",
+    "netflix_trial": "Netflix Trial",
+    "netflix_check": "Netflix Checker",
+    "netflix_token": "Netflix Token",
+    "surfshark":     "Surfshark",
+    "spotify":       "Spotify TV",
+    "hbomax":        "HBO Max TV",
+    "crunchyroll":   "Crunchyroll",
+    "jiohotstar":    "JioHotstar",
+    "chatgpt":       "ChatGPT",
+    "cursor":        "Cursor",
+    "instagram":     "Instagram",
+    "scan":          "Cookie Scanner",
 }
 
 # ─── Stats File ─────────────────────────────────────────────
