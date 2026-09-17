@@ -1,6 +1,5 @@
 # ============================================================
-# SERVICES INIT - Import all service modules
-# All constants are defined directly here to avoid circular imports
+# SERVICES INIT — All service modules
 # ============================================================
 
 from . import netflix_trial
@@ -11,16 +10,24 @@ from . import spotify
 from . import hbomax
 from . import crunchyroll
 from . import jiohotstar
+from . import chatgpt_service
+from . import cursor_service
+from . import instagram_service
+from . import scan_cookies_service
 
-# Define all constants here directly
-WAITING_EMAIL = 1
-WAITING_NETFLIX_FILE = 2
+# ─── Conversation states ───
+WAITING_EMAIL              = 1
+WAITING_NETFLIX_FILE       = 2
 WAITING_NETFLIX_TOKEN_FILE = 3
-WAITING_SURFSHARK_CODE = 4
-WAITING_SPOTIFY_CODE = 5
-WAITING_HBO_CODE = 6
-WAITING_CRUNCHYROLL_CREDS = 7
-WAITING_JIO_QR = 8
+WAITING_SURFSHARK_CODE     = 4
+WAITING_SPOTIFY_CODE       = 5
+WAITING_HBO_CODE           = 6
+WAITING_CRUNCHYROLL_CREDS  = 7
+WAITING_JIO_QR             = 8
+WAITING_CHATGPT_FILE       = 9
+WAITING_CURSOR_FILE        = 10
+WAITING_INSTAGRAM_FILE     = 11
+WAITING_SCAN_FILE          = 12
 
 __all__ = [
     'netflix_trial',
@@ -31,6 +38,10 @@ __all__ = [
     'hbomax',
     'crunchyroll',
     'jiohotstar',
+    'chatgpt_service',
+    'cursor_service',
+    'instagram_service',
+    'scan_cookies_service',
     'WAITING_EMAIL',
     'WAITING_NETFLIX_FILE',
     'WAITING_NETFLIX_TOKEN_FILE',
@@ -39,4 +50,8 @@ __all__ = [
     'WAITING_HBO_CODE',
     'WAITING_CRUNCHYROLL_CREDS',
     'WAITING_JIO_QR',
+    'WAITING_CHATGPT_FILE',
+    'WAITING_CURSOR_FILE',
+    'WAITING_INSTAGRAM_FILE',
+    'WAITING_SCAN_FILE',
 ]
